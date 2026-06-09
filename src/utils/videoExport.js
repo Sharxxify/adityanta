@@ -1,53 +1,16 @@
 import html2canvas from 'html2canvas'
 import { buildSlideRenderNode, SLIDE_WIDTH, SLIDE_HEIGHT } from './slideRender'
+import { computeSnakePosition } from './snakeLayout'
 import logger from './logger'
 
 // ─── Layout helpers (mirrored from PresentationPage) ───────────────────────
-const HERO_LAYOUT = { x: 820, y: 220, width: 1280, height: 720 }
 const WORLD_PADDING = 220
 
-const fitGridInArea = (area, count) => {
-  if (count === 0) return []
-  let bestCols = 1, bestW = 0
-  const gap = 20
-  for (let cols = 1; cols <= count; cols++) {
-    const rows = Math.ceil(count / cols)
-    const w1 = (area.w - gap * (cols - 1)) / cols
-    const maxH = (area.h - gap * (rows - 1)) / rows
-    const w2 = maxH * (16 / 9)
-    const w = Math.min(w1, w2, 320)
-    if (w > bestW) { bestW = w; bestCols = cols }
-  }
-  const cols = bestCols, rows = Math.ceil(count / cols)
-  const fw = bestW, fh = fw * 9 / 16
-  const gridW = cols * fw + (cols - 1) * gap
-  const gridH = rows * fh + (rows - 1) * gap
-  const startX = area.x + (area.w - gridW) / 2
-  const startY = area.y + (area.h - gridH) / 2
-  return Array.from({ length: count }, (_, i) => ({
-    x: startX + (i % cols) * (fw + gap),
-    y: startY + Math.floor(i / cols) * (fh + gap),
-    width: fw, height: fh,
-  }))
-}
-
-const computeFrameLayouts = (sideCount) => {
-  if (sideCount === 0) return []
-  const leftN = Math.ceil(sideCount / 2)
-  const rightN = sideCount - leftN
-  return [
-    ...fitGridInArea({ x: 40, y: 100, w: 760, h: 1070 }, leftN),
-    ...fitGridInArea({ x: 2120, y: 100, w: 800, h: 1070 }, rightN),
-  ]
-}
-
 const getFrameMapLayout = (frames) => {
-  const sideLayouts = computeFrameLayouts(Math.max(0, frames.length - 1))
-  return frames.map((frame, index) => {
-    if (index === 0) return { id: frame.id, ...(frame.layout || HERO_LAYOUT) }
-    if (frame.layout) return { id: frame.id, ...frame.layout }
-    return { id: frame.id, ...(sideLayouts[index - 1] || sideLayouts[sideLayouts.length - 1] || HERO_LAYOUT) }
-  })
+  return frames.map((frame, index) => ({
+    id: frame.id,
+    ...(frame.layout ? frame.layout : computeSnakePosition(index)),
+  }))
 }
 
 const getWorldBounds = (layout) => {
@@ -174,6 +137,7 @@ export const exportToVideo = async (frames, options, onProgress, header = null) 
     slideDuration = 3,
     projectTitle = 'presentation',
     editorBackground = null,
+    exportFormat = 'mp4',
   } = options
 
   if (!window.MediaRecorder) {
@@ -286,29 +250,7 @@ export const exportToVideo = async (frames, options, onProgress, header = null) 
     recorder.onstop = () => resolve()
   })
 
-  // Trigger download (mp4 if convertible, else webm fallback)
-  const triggerDownload = async (webmBlob) => {
-    let blob = webmBlob
-    let filename = `${projectTitle}.webm`
 
-    try {
-      onProgress?.(frames.length, frames.length, 'Converting to MP4…')
-      blob = await convertToMp4(webmBlob, onProgress)
-      filename = `${projectTitle}.mp4`
-    } catch (err) {
-      logger.warn('MP4 conversion skipped, downloading as WebM:', err.message)
-      // fall through — blob stays as webm
-    }
-
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(url), 5000)
-  }
 
   // ── Drawing function (FAST — pure canvas ops, no DOM) ───────────────
   const drawScene = (cam) => {
@@ -437,14 +379,16 @@ export const exportToVideo = async (frames, options, onProgress, header = null) 
     // Assemble WebM blob
     const webmBlob = new Blob(chunks, { type: mimeType.split(';')[0] })
 
-    // Try MP4, fall back to WebM
+    // Try MP4 if selected, else download WebM directly
     let downloadBlob = webmBlob
     let filename = `${projectTitle}.webm`
-    try {
-      downloadBlob = await convertToMp4(webmBlob)
-      filename = `${projectTitle}.mp4`
-    } catch (convErr) {
-      logger.warn('MP4 conversion skipped — downloading as WebM:', convErr.message)
+    if (exportFormat === 'mp4') {
+      try {
+        downloadBlob = await convertToMp4(webmBlob)
+        filename = `${projectTitle}.mp4`
+      } catch (convErr) {
+        logger.warn('MP4 conversion skipped — downloading as WebM:', convErr.message)
+      }
     }
 
     const url = URL.createObjectURL(downloadBlob)

@@ -9,6 +9,7 @@ const VideoExportModal = ({ isOpen, onClose }) => {
   const toast = useToast()
 
   const [slideDuration, setSlideDuration] = useState(3)
+  const [exportFormat, setExportFormat] = useState('mp4')
   const [isExporting, setIsExporting] = useState(false)
   const [progress, setProgress] = useState(null) // { current, total, message }
 
@@ -32,7 +33,7 @@ const VideoExportModal = ({ isOpen, onClose }) => {
     try {
       await exportToVideo(
         frames,
-        { slideDuration, projectTitle, editorBackground },
+        { slideDuration, projectTitle, editorBackground, exportFormat },
         (current, total, message) => setProgress({ current, total, message })
       )
       toast.success('Video exported successfully!')
@@ -94,6 +95,37 @@ const VideoExportModal = ({ isOpen, onClose }) => {
                 </div>
               </div>
 
+              {/* Format selection */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700 block">Export Format</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setExportFormat('mp4')}
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all text-center ${
+                      exportFormat === 'mp4'
+                        ? 'border-purple-600 bg-purple-50/50 text-purple-700 font-semibold'
+                        : 'border-gray-200 hover:border-gray-300 text-gray-600 bg-white'
+                    }`}
+                  >
+                    <span className="text-sm font-bold">MP4 Video</span>
+                    <span className="text-[10px] text-gray-400 mt-0.5 font-normal leading-tight">High compatibility, slower export</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExportFormat('webm')}
+                    className={`flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all text-center ${
+                      exportFormat === 'webm'
+                        ? 'border-purple-600 bg-purple-50/50 text-purple-700 font-semibold'
+                        : 'border-gray-200 hover:border-gray-300 text-gray-600 bg-white'
+                    }`}
+                  >
+                    <span className="text-sm font-bold">WebM Video</span>
+                    <span className="text-[10px] text-gray-400 mt-0.5 font-normal leading-tight">Super fast export, instant download</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Info cards */}
               <div className="space-y-3">
                 <div className="rounded-lg bg-purple-50 p-3.5 border border-purple-100">
@@ -109,12 +141,16 @@ const VideoExportModal = ({ isOpen, onClose }) => {
 
                 <div className="rounded-lg bg-gray-50 p-3.5 border border-gray-100 flex items-center justify-between">
                   <span className="text-sm text-gray-600">Estimated duration</span>
-                  <span className="text-sm font-semibold text-gray-900">~{estimatedTime}s</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    ~{estimatedTime}s {exportFormat === 'mp4' ? '(plus MP4 conversion)' : '(instant download)'}
+                  </span>
                 </div>
 
                 <div className="rounded-lg bg-gray-50 p-3.5 border border-gray-100 flex items-center justify-between">
                   <span className="text-sm text-gray-600">Output format</span>
-                  <span className="text-sm font-semibold text-gray-900">.mp4 (1920×1080)</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {exportFormat === 'mp4' ? '.mp4 (1920×1080)' : '.webm (1920×1080)'}
+                  </span>
                 </div>
               </div>
             </div>
