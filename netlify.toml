@@ -1,0 +1,23 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Enable SharedArrayBuffer for FFmpeg.wasm (Required for MP4 export)
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+
+# Proxy frontend API calls to backend (avoids CORS and fixes /api/v1 404 on Netlify)
+[[redirects]]
+  from = "/api/*"
+  to = "http://ec2-13-60-248-220.eu-north-1.compute.amazonaws.com:3001/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
