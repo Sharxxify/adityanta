@@ -131,6 +131,14 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Sync color picker state with active element
+  useEffect(() => {
+    if (element) {
+      setTempColor(element.color || '#1a1a1a')
+      setHexInput(element.color || '#1a1a1a')
+    }
+  }, [element])
+
   const handleFontSizeChange = (delta) => {
     if (delta > 0) {
       const next = fontSizes.find(s => s > fontSize)
