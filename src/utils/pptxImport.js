@@ -5,6 +5,68 @@ const CANVAS_W = 1280
 const CANVAS_H = 720
 
 /**
+ * Resolve a relative path inside the zip.
+ * E.g., basePath = "ppt/slides/slide1.xml", relativePath = "../slideLayouts/slideLayout1.xml"
+ * returns "ppt/slideLayouts/slideLayout1.xml"
+ */
+function resolveRelativePath(basePath, relativePath) {
+  if (!relativePath) return ''
+  if (relativePath.includes('://') || relativePath.startsWith('mailto:')) {
+    return relativePath
+  }
+  if (relativePath.startsWith('/')) {
+    return relativePath.substring(1)
+  }
+  const baseParts = basePath.split('/')
+  baseParts.pop() // remove filename
+  const relParts = relativePath.split('/')
+  for (const part of relParts) {
+    if (part === '.') {
+      continue
+    } else if (part === '..') {
+      baseParts.pop()
+    } else {
+      baseParts.push(part)
+    }
+  }
+  return baseParts.join('/')
+}
+
+/** Get the relationship file path for an XML file path */
+function getRelsPathForXml(xmlPath) {
+  if (!xmlPath) return ''
+  const parts = xmlPath.split('/')
+  const filename = parts.pop()
+  parts.push('_rels')
+  parts.push(filename + '.rels')
+  return parts.join('/')
+}
+
+/** Get relationship map from a rels XML path in zip */
+async function getRelsMap(zip, relsPath) {
+  const relsFile = zip.file(relsPath)
+  const map = {}
+  if (!relsFile) return map
+
+  try {
+    const xml = await relsFile.async('string')
+    const doc = new DOMParser().parseFromString(xml, 'application/xml')
+    const rels = doc.querySelectorAll('Relationship')
+    rels.forEach(rel => {
+      const id = rel.getAttribute('Id')
+      const target = rel.getAttribute('Target')
+      if (id && target) {
+        map[id] = target
+      }
+    })
+  } catch (error) {
+    // ignore
+  }
+  return map
+}
+
+
+/**
  * Parse a .pptx file and convert it to our editor frame format
  * @param {File} file - The .pptx file to parse
  * @returns {Promise<{title: string, frames: Array}>}
@@ -12,6 +74,10 @@ const CANVAS_H = 720
 export async function parsePPTX(file) {
   const zip = await JSZip.loadAsync(file)
 
+  // Debug: list all files in the zip
+  const allFiles = Object.keys(zip.files)
+  console.log('[PPTX DEBUG] Files in zip:', allFiles.filter(f => !f.endsWith('/')))
+  console.log('[PPTX DEBUG] Media files:', allFiles.filter(f => f.includes('media/')))
   // 1. Get presentation info (slide size + slide list)
   const { slideSize, slideRefs } = await parsePresentationXml(zip)
   const title = await getPresentationTitle(zip, file.name)
@@ -150,12 +216,14 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
   const doc = new DOMParser().parseFromString(xml, 'application/xml')
 
   // Get slide relationships (for image references)
-  const relsMap = await getSlideRels(zip, slideNum)
+  const slideRelsPath = getRelsPathForXml(slidePath)
+  const relsMap = await getRelsMap(zip, slideRelsPath)
 
   // Resolve slide layout path (for debugging and layout merging)
   const layoutPath = await resolveSlideLayout(zip, slidePath)
   let layoutNodeCounts = null
   let layoutDoc = null
+  let layoutRelsMap = {}
 
   if (layoutPath) {
     try {
@@ -163,6 +231,9 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
       if (layoutFile) {
         const layoutXml = await layoutFile.async('string')
         layoutDoc = new DOMParser().parseFromString(layoutXml, 'application/xml')
+
+        const layoutRelsPath = getRelsPathForXml(layoutPath)
+        layoutRelsMap = await getRelsMap(zip, layoutRelsPath)
 
         const layoutSpNodes = layoutDoc.getElementsByTagName('p:sp')
         const layoutPicNodes = layoutDoc.getElementsByTagName('p:pic')
@@ -184,7 +255,8 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
   let masterPath = null
   let masterDoc = null
   let masterNodeCounts = null
-  let masterBackground = null
+  let masterRelsMap = {}
+  let masterBg = null
 
   if (layoutPath) {
     try {
@@ -194,6 +266,9 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
         if (masterFile) {
           const masterXml = await masterFile.async('string')
           masterDoc = new DOMParser().parseFromString(masterXml, 'application/xml')
+
+          const masterRelsPath = getRelsPathForXml(masterPath)
+          masterRelsMap = await getRelsMap(zip, masterRelsPath)
 
           const masterSpNodes = masterDoc.getElementsByTagName('p:sp')
           const masterPicNodes = masterDoc.getElementsByTagName('p:pic')
@@ -206,7 +281,7 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
           }
 
           // Check master background
-          masterBackground = await parseBackground(masterDoc, zip)
+          masterBg = await parseBackground(masterDoc, zip, masterRelsMap, masterPath)
         }
       }
     } catch (error) {
@@ -215,19 +290,36 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
     }
   }
 
+  // Parse background color (slide → layout → master). Supports solid, gradient, and image (blipFill) fills.
+  const slideBg = await parseBackground(doc, zip, relsMap, slidePath)
+  const layoutBg = layoutDoc ? await parseBackground(layoutDoc, zip, layoutRelsMap, layoutPath) : null
 
+  console.log(`[PPTX DEBUG] Slide ${slideNum} backgrounds:`, {
+    slideBg: slideBg ? (slideBg.startsWith('data:image/') ? `IMAGE(${slideBg.length} chars)` : slideBg) : null,
+    layoutBg: layoutBg ? (layoutBg.startsWith('data:image/') ? `IMAGE(${layoutBg.length} chars)` : layoutBg) : null,
+    masterBg: masterBg ? (masterBg.startsWith('data:image/') ? `IMAGE(${masterBg.length} chars)` : masterBg) : null,
+    layoutPath,
+    masterPath,
+    slideRelsCount: Object.keys(relsMap).length,
+    layoutRelsCount: Object.keys(layoutRelsMap).length,
+    masterRelsCount: Object.keys(masterRelsMap).length,
+  })
 
+  // Precedence for background color and background image
+  let backgroundColor = '#ffffff'
+  let backgroundImage = null
 
+  // 1. Resolve Background Image (precedence: slide -> layout -> master)
+  const bgImage = [slideBg, layoutBg, masterBg].find(bg => bg && bg.startsWith('data:image/'))
+  if (bgImage) {
+    backgroundImage = bgImage
+  }
 
-  // Parse background color (slide → layout → master). Supports a:solidFill with both srgbClr and schemeClr.
-  const slideBg = await parseBackground(doc, zip)
-  const layoutBg = layoutDoc ? await parseBackground(layoutDoc, zip) : null
-  const masterBg = masterBackground || null
-
-  // Choose the first available background in precedence order
-  let backgroundColor = slideBg || layoutBg || masterBg || '#ffffff'
-
-
+  // 2. Resolve Background Color/Gradient (precedence: slide -> layout -> master)
+  const bgColor = [slideBg, layoutBg, masterBg].find(bg => bg && !bg.startsWith('data:image/'))
+  if (bgColor) {
+    backgroundColor = bgColor
+  }
 
   // Parse elements from layout (if any) and slide, merging placeholders
   let layoutElements = []
@@ -241,13 +333,14 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
       emuToY,
       emuToW,
       emuToH,
-      null, // layout images use separate rels; skip for minimal merge
+      layoutRelsMap, // Pass layout relationships map instead of null
       zip,
       frameIndex,
       'layout',
       elementIdBase,
       scaleFactor,
-      backgroundColor
+      backgroundColor,
+      layoutPath // Pass layoutPath
     )
     layoutElements = layoutResult.elements
     elementIdBase = layoutResult.nextElementId
@@ -266,7 +359,8 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
     'slide',
     elementIdBase,
     scaleFactor,
-    backgroundColor
+    backgroundColor,
+    slidePath // Pass slidePath
   )
   const slideElements = slideResult.elements
 
@@ -274,8 +368,12 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
   // This removes layout placeholders that are filled by slide elements
   let elements = mergeElements(layoutElements, slideElements)
 
-  // 4. Filter decorative elements from Slide (User Request)
-  // Remove shapes that are NOT placeholders and have NO text content
+  console.log(`[PPTX DEBUG] Slide ${slideNum} elements:`, {
+    layoutElements: layoutElements.map(e => ({ type: e.type, phType: e.placeholderType, phIdx: e.placeholderIdx, hasContent: !!e.content, hasSrc: !!e.src, source: e.source, w: e.width, h: e.height })),
+    slideElements: slideElements.map(e => ({ type: e.type, phType: e.placeholderType, phIdx: e.placeholderIdx, hasContent: !!e.content, hasSrc: !!e.src, source: e.source, w: e.width, h: e.height })),
+    mergedCount: elements.length,
+  })
+
   // Collect raw shape nodes for debug metrics (slide doc only)
   const spNodes = doc.getElementsByTagName('p:sp')
   const picNodes = doc.getElementsByTagName('p:pic')
@@ -287,16 +385,16 @@ async function parseSlide(zip, slideNum, frameIndex, emuToX, emuToY, emuToW, emu
   const notes = await getSlideNotes(zip, slideNum)
 
   // Check for full-slide background images and convert them to backgroundImage
-  let backgroundImage = null
   const filteredElements = elements.filter(el => {
     if (el.type === 'image' && el.src && el.width >= CANVAS_W - 20 && el.height >= CANVAS_H - 20 && el.x <= 10 && el.y <= 10) {
       // This image covers the entire slide — use it as background instead of an element
-      backgroundImage = el.src
+      if (!backgroundImage) {
+        backgroundImage = el.src
+      }
       return false
     }
     return true
   })
-
 
   return {
     id: frameIndex + 1,
@@ -345,20 +443,10 @@ async function resolveSlideLayout(zip, slidePath) {
     for (const rel of rels) {
       const type = rel.getAttribute('Type') || ''
       // Check if this relationship is for slideLayout
-      // Type typically ends with "slideLayout" or contains "slideLayout"
       if (type.includes('slideLayout')) {
         let target = rel.getAttribute('Target')
         if (!target) continue
-
-        // Resolve relative paths (e.g., "../slideLayouts/slideLayout1.xml" -> "ppt/slideLayouts/slideLayout1.xml")
-        if (target.startsWith('../')) {
-          target = 'ppt/' + target.replace('../', '')
-        } else if (!target.startsWith('ppt/')) {
-          // If path doesn't start with ppt/, assume it's relative to slides/
-          target = `ppt/slideLayouts/${target}`
-        }
-
-        return target
+        return resolveRelativePath(slidePath, target)
       }
     }
   } catch (error) {
@@ -388,20 +476,10 @@ async function resolveSlideMaster(zip, layoutPath) {
     for (const rel of rels) {
       const type = rel.getAttribute('Type') || ''
       // Check if this relationship is for slideMaster
-      // Type typically ends with "slideMaster" or contains "slideMaster"
       if (type.includes('slideMaster')) {
         let target = rel.getAttribute('Target')
         if (!target) continue
-
-        // Resolve relative paths (e.g., "../slideMasters/slideMaster1.xml" -> "ppt/slideMasters/slideMaster1.xml")
-        if (target.startsWith('../')) {
-          target = 'ppt/' + target.replace('../', '')
-        } else if (!target.startsWith('ppt/')) {
-          // If path doesn't start with ppt/, assume it's relative to slideLayouts/
-          target = `ppt/slideMasters/${target}`
-        }
-
-        return target
+        return resolveRelativePath(layoutPath, target)
       }
     }
   } catch (error) {
@@ -412,25 +490,117 @@ async function resolveSlideMaster(zip, layoutPath) {
   return null
 }
 
-
-
-/** Parse background color from slide XML - supports both srgbClr and schemeClr */
-async function parseBackground(doc, zip = null) {
-  // Only support <p:bg> -> <p:bgPr> -> <a:solidFill>
+/** Parse background color/image from slide XML - supports solid, gradient, image fills, and theme references */
+async function parseBackground(doc, zip = null, relsMap = null, xmlPath = null) {
   const bgNodes = doc.getElementsByTagName('p:bg')
-  if (bgNodes.length === 0) return null
+  if (bgNodes.length === 0) {
+    console.log(`[PPTX BG DEBUG] No p:bg found in ${xmlPath || 'unknown'}`)
+    return null
+  }
 
-  const bgPr = bgNodes[0].getElementsByTagName('p:bgPr')[0] || bgNodes[0]
-  const solidFill = bgPr.getElementsByTagName('a:solidFill')[0]
-  if (!solidFill) return null
+  const bgNode = bgNodes[0]
+  const bgPr = bgNode.getElementsByTagName('p:bgPr')[0]
+  const bgRef = bgNode.getElementsByTagName('p:bgRef')[0]
+  
+  console.log(`[PPTX BG DEBUG] ${xmlPath}: hasBgPr=${!!bgPr}, hasBgRef=${!!bgRef}`)
 
-  // Try srgbClr first (direct color)
+  // --- Handle p:bgPr (explicit background properties) ---
+  if (bgPr) {
+    // Check blipFill (background image)
+    const blipFill = bgPr.getElementsByTagName('a:blipFill')[0]
+    if (blipFill && relsMap && zip) {
+      const imgResult = await resolveBlipImage(blipFill, relsMap, zip, xmlPath)
+      if (imgResult) return imgResult
+    }
+
+    // Try solidFill
+    const solidFill = bgPr.getElementsByTagName('a:solidFill')[0]
+    if (solidFill) {
+      const color = await resolveFillColor(solidFill, zip)
+      if (color) return color
+    }
+
+    // Check for gradient fill
+    const gradFill = bgPr.getElementsByTagName('a:gradFill')[0]
+    if (gradFill && zip) {
+      const gradient = await parseGradient(gradFill, zip)
+      if (gradient) return gradient
+    }
+  }
+
+  // --- Handle p:bgRef (background reference from theme) ---
+  // <p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef>
+  // The idx references a fill style from the theme's fmtScheme.
+  // idx 1-999 = fillStyleLst, idx 1000+ = bgFillStyleLst (idx - 1000)
+  if (bgRef && zip) {
+    const idx = parseInt(bgRef.getAttribute('idx') || '0')
+    console.log(`[PPTX BG DEBUG] bgRef idx=${idx}`)
+    
+    // First check if bgRef directly contains a color
+    const refSrgb = bgRef.getElementsByTagName('a:srgbClr')[0]
+    const refScheme = bgRef.getElementsByTagName('a:schemeClr')[0]
+    
+    if (refSrgb) {
+      return '#' + refSrgb.getAttribute('val')
+    }
+    
+    if (idx > 0) {
+      // Try to resolve from theme's background fill style list
+      const themeResult = await resolveThemeBgFill(zip, idx, relsMap, xmlPath)
+      if (themeResult) return themeResult
+    }
+    
+    // Fall back to resolving the scheme color from the bgRef
+    if (refScheme) {
+      const schemeValue = refScheme.getAttribute('val')
+      const lumModOp = refScheme.getElementsByTagName('a:lumMod')[0]
+      const lumOffOp = refScheme.getElementsByTagName('a:lumOff')[0]
+      const lumMod = lumModOp ? parseInt(lumModOp.getAttribute('val')) : undefined
+      const lumOff = lumOffOp ? parseInt(lumOffOp.getAttribute('val')) : undefined
+      const resolved = await resolveSchemeColorFromTheme(zip, schemeValue, lumMod, lumOff)
+      if (resolved) return resolved
+    }
+  }
+
+  // Unsupported background types are treated as absent
+  return null
+}
+
+/** Resolve a blip (image) fill from an a:blipFill node */
+async function resolveBlipImage(blipFill, relsMap, zip, xmlPath) {
+  const blip = blipFill.getElementsByTagName('a:blip')[0]
+  if (!blip) return null
+  
+  const rEmbed = blip.getAttribute('r:embed') || 
+                 blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed') ||
+                 blip.getAttribute('r:link') ||
+                 blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'link')
+  
+  if (!rEmbed || !relsMap[rEmbed]) return null
+  
+  const target = relsMap[rEmbed]
+  const mediaPath = resolveRelativePath(xmlPath, target)
+  const mediaFile = zip.file(mediaPath)
+  if (!mediaFile) return null
+  
+  try {
+    const imgData = await mediaFile.async('base64')
+    const ext = mediaPath.split('.').pop().toLowerCase()
+    const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' }
+    const mime = mimeMap[ext] || 'image/png'
+    return `data:${mime};base64,${imgData}`
+  } catch (e) {
+    return null
+  }
+}
+
+/** Resolve a solid fill color from an a:solidFill node */
+async function resolveFillColor(solidFill, zip) {
   const srgb = solidFill.getElementsByTagName('a:srgbClr')[0]
   if (srgb && srgb.getAttribute('val')) {
     return '#' + srgb.getAttribute('val')
   }
 
-  // Try schemeClr (theme-based color)
   const schemeClr = solidFill.getElementsByTagName('a:schemeClr')[0]
   if (schemeClr && schemeClr.getAttribute('val') && zip) {
     const schemeValue = schemeClr.getAttribute('val')
@@ -438,24 +608,104 @@ async function parseBackground(doc, zip = null) {
     const lumOffOp = schemeClr.getElementsByTagName('a:lumOff')[0]
     const lumMod = lumModOp ? parseInt(lumModOp.getAttribute('val')) : undefined
     const lumOff = lumOffOp ? parseInt(lumOffOp.getAttribute('val')) : undefined
-
-    const resolvedColor = await resolveSchemeColorFromTheme(zip, schemeValue, lumMod, lumOff)
-    if (resolvedColor) {
-      return resolvedColor
-    }
+    return await resolveSchemeColorFromTheme(zip, schemeValue, lumMod, lumOff)
   }
-
-  // Check for gradient fill
-  const gradFill = bgPr.getElementsByTagName('a:gradFill')[0]
-  if (gradFill && zip) {
-    const gradient = await parseGradient(gradFill, zip)
-    if (gradient) {
-      return gradient
-    }
-  }
-
-  // Unsupported background types are treated as absent
   return null
+}
+
+/** Resolve background fill from theme's fmtScheme (bgFillStyleLst or fillStyleLst) */
+async function resolveThemeBgFill(zip, idx, relsMap, xmlPath) {
+  try {
+    const themeXml = await zip.file('ppt/theme/theme1.xml')?.async('text')
+    if (!themeXml) return null
+
+    const doc = new DOMParser().parseFromString(themeXml, 'text/xml')
+    const fmtScheme = doc.getElementsByTagName('a:fmtScheme')[0]
+    if (!fmtScheme) return null
+
+    let fillNode = null
+    
+    if (idx >= 1000) {
+      // bgFillStyleLst: idx 1001 = first entry, 1002 = second, etc.
+      const bgFillStyleLst = fmtScheme.getElementsByTagName('a:bgFillStyleLst')[0]
+      if (bgFillStyleLst) {
+        // Get all direct fill children (solidFill, gradFill, blipFill, etc.)
+        const fillChildren = []
+        for (let i = 0; i < bgFillStyleLst.childNodes.length; i++) {
+          const child = bgFillStyleLst.childNodes[i]
+          if (child.nodeType === 1) { // Element node
+            fillChildren.push(child)
+          }
+        }
+        const fillIdx = idx - 1001 // 0-based
+        console.log(`[PPTX BG DEBUG] bgFillStyleLst: ${fillChildren.length} entries, looking for idx ${fillIdx}`)
+        if (fillIdx >= 0 && fillIdx < fillChildren.length) {
+          fillNode = fillChildren[fillIdx]
+        }
+      }
+    } else {
+      // fillStyleLst: idx 1 = first entry, 2 = second, etc.
+      const fillStyleLst = fmtScheme.getElementsByTagName('a:fillStyleLst')[0]
+      if (fillStyleLst) {
+        const fillChildren = []
+        for (let i = 0; i < fillStyleLst.childNodes.length; i++) {
+          const child = fillStyleLst.childNodes[i]
+          if (child.nodeType === 1) fillChildren.push(child)
+        }
+        const fillIdx = idx - 1
+        if (fillIdx >= 0 && fillIdx < fillChildren.length) {
+          fillNode = fillChildren[fillIdx]
+        }
+      }
+    }
+
+    if (!fillNode) return null
+
+    console.log(`[PPTX BG DEBUG] Theme fill node tag: ${fillNode.tagName || fillNode.localName}`)
+
+    // Resolve the fill based on type
+    const tagName = (fillNode.tagName || fillNode.localName || '').toLowerCase()
+    
+    if (tagName.includes('blipfill') || tagName === 'a:blipfill') {
+      // Image fill from theme - need theme rels
+      const themeRelsPath = 'ppt/theme/_rels/theme1.xml.rels'
+      const themeRelsMap = await getRelsMap(zip, themeRelsPath)
+      const imgResult = await resolveBlipImage(fillNode, themeRelsMap, zip, 'ppt/theme/theme1.xml')
+      if (imgResult) return imgResult
+    }
+    
+    if (tagName.includes('solidfill') || tagName === 'a:solidfill') {
+      return await resolveFillColor(fillNode, zip)
+    }
+    
+    if (tagName.includes('gradfill') || tagName === 'a:gradfill') {
+      return await parseGradient(fillNode, zip)
+    }
+
+    // Check children for fills (some themes wrap fills differently)
+    const blipFill = fillNode.getElementsByTagName('a:blipFill')[0]
+    if (blipFill) {
+      const themeRelsPath = 'ppt/theme/_rels/theme1.xml.rels'
+      const themeRelsMap = await getRelsMap(zip, themeRelsPath)
+      const imgResult = await resolveBlipImage(blipFill, themeRelsMap, zip, 'ppt/theme/theme1.xml')
+      if (imgResult) return imgResult
+    }
+
+    const solidFill = fillNode.getElementsByTagName('a:solidFill')[0]
+    if (solidFill) {
+      return await resolveFillColor(solidFill, zip)
+    }
+
+    const gradFill = fillNode.getElementsByTagName('a:gradFill')[0]
+    if (gradFill) {
+      return await parseGradient(gradFill, zip)
+    }
+
+    return null
+  } catch (e) {
+    console.log(`[PPTX BG DEBUG] Error resolving theme bg fill:`, e.message)
+    return null
+  }
 }
 
 /** Parse <a:gradFill> to CSS linear-gradient */
@@ -569,124 +819,157 @@ async function parseElementsFromDoc(
   source,
   startingElementId,
   scaleFactor,
-  slideBackgroundColor
+  slideBackgroundColor,
+  xmlPath = null
 ) {
   const elements = []
   let elementId = startingElementId
 
+  const traverseSpTree = async (node, transform) => {
+    const { offsetX, offsetY, scaleX, scaleY } = transform
 
+    // Helper functions that apply the current coordinate transform
+    const localEmuToX = (emu) => emuToX(offsetX + emu * scaleX)
+    const localEmuToY = (emu) => emuToY(offsetY + emu * scaleY)
+    const localEmuToW = (emu) => emuToW(emu * scaleX)
+    const localEmuToH = (emu) => emuToH(emu * scaleY)
 
-  // Parse shape/text elements (<p:sp>)
-  const spNodes = doc.getElementsByTagName('p:sp')
-  for (let i = 0; i < spNodes.length; i++) {
-    const el = await parseShapeElement(spNodes[i], ++elementId, emuToX, emuToY, emuToW, emuToH, zip, scaleFactor, slideBackgroundColor)
-    if (el) {
-      el.source = source
-      elements.push(el)
-    }
-  }
+    const childNodes = node.childNodes
+    if (!childNodes) return
 
-  // Parse image elements (<p:pic>)
-  const picNodes = doc.getElementsByTagName('p:pic')
-  for (let i = 0; i < picNodes.length; i++) {
-    const el = await parseImageElement(picNodes[i], ++elementId, emuToX, emuToY, emuToW, emuToH, relsMap, zip)
-    if (el) {
-      el.source = source
-      elements.push(el)
-    }
-  }
+    for (let i = 0; i < childNodes.length; i++) {
+      const child = childNodes[i]
+      if (child.nodeType !== 1) continue // Process elements only
 
-  // Parse table elements (<p:graphicFrame> containing <a:tbl>)
-  const gfNodes = doc.getElementsByTagName('p:graphicFrame')
-  for (let i = 0; i < gfNodes.length; i++) {
-    const gfNode = gfNodes[i]
+      const tagName = child.localName || child.tagName || ''
 
+      if (tagName === 'sp') {
+        // Check if this shape actually has an image fill (a:blipFill)
+        const spPr = child.getElementsByTagName('p:spPr')[0] || child.getElementsByTagName('a:spPr')[0]
+        const blipFill = spPr ? spPr.getElementsByTagName('a:blipFill')[0] : null
+        
+        if (blipFill && relsMap && zip) {
+          // Parse as image element
+          const el = await parseImageElement(child, ++elementId, localEmuToX, localEmuToY, localEmuToW, localEmuToH, relsMap, zip, xmlPath)
+          if (el) {
+            el.source = source
+            elements.push(el)
+          }
+        } else {
+          // Parse as standard shape/text element
+          const el = await parseShapeElement(child, ++elementId, localEmuToX, localEmuToY, localEmuToW, localEmuToH, zip, scaleFactor, slideBackgroundColor)
+          if (el) {
+            el.source = source
+            elements.push(el)
+          }
+        }
+      } else if (tagName === 'pic') {
+        // Parse image element
+        const el = await parseImageElement(child, ++elementId, localEmuToX, localEmuToY, localEmuToW, localEmuToH, relsMap, zip, xmlPath)
+        if (el) {
+          el.source = source
+          elements.push(el)
+        }
+      } else if (tagName === 'graphicFrame') {
+        // Parse table element
+        const tableEl = parseTableElement(child, ++elementId, localEmuToX, localEmuToY, localEmuToW, localEmuToH)
+        if (tableEl) {
+          tableEl.source = source
+          elements.push(tableEl)
+          continue
+        }
 
-    // First, try to parse as a real table (existing behavior)
-    const tableEl = parseTableElement(gfNode, ++elementId, emuToX, emuToY, emuToW, emuToH)
+        // SmartArt placeholder fallback
+        let xfrm = child.getElementsByTagName('a:xfrm')[0] || child.getElementsByTagName('p:xfrm')[0]
+        if (!xfrm) continue
 
-    if (tableEl) {
-      tableEl.source = source
-      elements.push(tableEl)
-      continue
-    }
-    // If not a table, treat as a minimal SmartArt placeholder
-    // Try the common 'a:xfrm' first; fall back to 'p:xfrm' which some SmartArt use
-    let xfrm = gfNode.getElementsByTagName('a:xfrm')[0]
-    if (!xfrm) xfrm = gfNode.getElementsByTagName('p:xfrm')[0]
+        const off = xfrm.getElementsByTagName('a:off')[0]
+        const ext = xfrm.getElementsByTagName('a:ext')[0]
+        if (!off || !ext) continue
 
-    if (!xfrm) continue
+        const x = localEmuToX(parseInt(off.getAttribute('x')) || 0)
+        const y = localEmuToY(parseInt(off.getAttribute('y')) || 0)
+        const width = localEmuToW(parseInt(ext.getAttribute('cx')) || 0)
+        const height = localEmuToH(parseInt(ext.getAttribute('cy')) || 0)
 
-    const off = xfrm.getElementsByTagName('a:off')[0]
-    const ext = xfrm.getElementsByTagName('a:ext')[0]
-    if (!off || !ext) {
+        const textNodes = child.getElementsByTagName('a:t')
+        let smartArtText = ''
+        for (let t = 0; t < textNodes.length; t++) {
+          const txt = textNodes[t].textContent || ''
+          if (txt.trim()) {
+            smartArtText += (smartArtText ? ' | ' : '') + txt.trim()
+          }
+        }
 
-      continue
-    }
+        elements.push({
+          id: ++elementId,
+          type: 'smartart-placeholder',
+          x,
+          y,
+          width,
+          height,
+          text: smartArtText || 'SmartArt (not supported)',
+          source,
+        })
+      } else if (tagName === 'grpSp') {
+        // Parse group shape transformation
+        const grpSpPr = child.getElementsByTagName('p:grpSpPr')[0] || child.getElementsByTagName('a:grpSpPr')[0]
+        let nextTransform = { offsetX, offsetY, scaleX, scaleY }
 
+        if (grpSpPr) {
+          const xfrm = grpSpPr.getElementsByTagName('a:xfrm')[0]
+          if (xfrm) {
+            const off = xfrm.getElementsByTagName('a:off')[0]
+            const ext = xfrm.getElementsByTagName('a:ext')[0]
+            const chOff = xfrm.getElementsByTagName('a:chOff')[0]
+            const chExt = xfrm.getElementsByTagName('a:chExt')[0]
 
+            if (off && ext && chOff && chExt) {
+              const group_off_x = parseInt(off.getAttribute('x')) || 0
+              const group_off_y = parseInt(off.getAttribute('y')) || 0
+              const group_ext_cx = parseInt(ext.getAttribute('cx')) || 0
+              const group_ext_cy = parseInt(ext.getAttribute('cy')) || 0
+              const group_chOff_x = parseInt(chOff.getAttribute('x')) || 0
+              const group_chOff_y = parseInt(chOff.getAttribute('y')) || 0
+              const group_chExt_cx = parseInt(chExt.getAttribute('cx')) || 0
+              const group_chExt_cy = parseInt(chExt.getAttribute('cy')) || 0
 
-    const x = emuToX(parseInt(off.getAttribute('x')) || 0)
-    const y = emuToY(parseInt(off.getAttribute('y')) || 0)
-    const width = emuToW(parseInt(ext.getAttribute('cx')) || 0)
-    const height = emuToH(parseInt(ext.getAttribute('cy')) || 0)
+              const local_scale_x = group_chExt_cx > 0 ? (group_ext_cx / group_chExt_cx) : 1
+              const local_scale_y = group_chExt_cy > 0 ? (group_ext_cy / group_chExt_cy) : 1
 
-    const rot = parseInt(xfrm.getAttribute('rot') || '0')
-    const rotation = Math.round(rot / 60000)
+              const group_off_x_slide = offsetX + group_off_x * scaleX
+              const group_off_y_slide = offsetY + group_off_y * scaleY
+              const group_scale_x_slide = scaleX * local_scale_x
+              const group_scale_y_slide = scaleY * local_scale_y
 
-    const flipH = xfrm.getAttribute('flipH') == '1'
-    const flipV = xfrm.getAttribute('flipV') == '1' 
+              nextTransform = {
+                scaleX: group_scale_x_slide,
+                scaleY: group_scale_y_slide,
+                offsetX: group_off_x_slide - group_chOff_x * group_scale_x_slide,
+                offsetY: group_off_y_slide - group_chOff_y * group_scale_y_slide
+              }
+            }
+          }
+        }
 
-    // Extract text content from all a:t nodes within the graphic frame
-    // SmartArt often has text nodes deeply nested in dgm (diagram) relationships or inline data
-    const textNodes = gfNode.getElementsByTagName('a:t')
-    let smartArtText = ''
-    for (let t = 0; t < textNodes.length; t++) {
-      const txt = textNodes[t].textContent || ''
-      if (txt.trim()) {
-        smartArtText += (smartArtText ? ' | ' : '') + txt.trim()
+        // Recursively traverse children of the group shape
+        await traverseSpTree(child, nextTransform)
       }
     }
-
-    elements.push({
-      id: elementId, // elementId already incremented above
-      type: 'smartart-placeholder',
-      x,
-      y,
-      width,
-      height,
-      text: smartArtText || 'SmartArt (not supported)',
-      source,
-    })
   }
 
-
+  const spTreeNodes = doc.getElementsByTagName('p:spTree')
+  if (spTreeNodes.length > 0) {
+    await traverseSpTree(spTreeNodes[0], { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 })
+  } else {
+    await traverseSpTree(doc.documentElement, { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 })
+  }
 
   return { elements, nextElementId: elementId }
 }
 
 /** Parse a <p:sp> node into a text or shape element */
 async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuToH, zip, scaleFactor, slideBackgroundColor) {
-  // Get transform (position & size)
-  const xfrm = spNode.getElementsByTagName('a:xfrm')[0]
-  if (!xfrm) return null
-
-  const off = xfrm.getElementsByTagName('a:off')[0]
-  const ext = xfrm.getElementsByTagName('a:ext')[0]
-  if (!off || !ext) return null
-
-  const x = emuToX(parseInt(off.getAttribute('x')) || 0)
-  const y = emuToY(parseInt(off.getAttribute('y')) || 0)
-  const width = emuToW(parseInt(ext.getAttribute('cx')) || 0)
-  const height = emuToH(parseInt(ext.getAttribute('cy')) || 0)
-
-  // Skip tiny elements (likely decorative)
-  // Skip very thin slivers that are usually decorative lines or borders
-
-  // Get rotation (in 60,000ths of a degree)
-  const rot = parseInt(xfrm.getAttribute('rot') || '0')
-  const rotation = Math.round(rot / 60000)
-
   // Extract placeholder type from p:sp → p:nvSpPr → p:nvPr → p:ph
   let placeholderType = null
   let placeholderIdx = null
@@ -708,6 +991,25 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
       }
     }
   }
+
+  // Get transform (position & size)
+  const xfrm = spNode.getElementsByTagName('a:xfrm')[0]
+  if (!xfrm && !placeholderType) return null
+
+  let x = 0, y = 0, width = 0, height = 0, rotation = 0
+  if (xfrm) {
+    const off = xfrm.getElementsByTagName('a:off')[0]
+    const ext = xfrm.getElementsByTagName('a:ext')[0]
+    if (off && ext) {
+      x = emuToX(parseInt(off.getAttribute('x')) || 0)
+      y = emuToY(parseInt(off.getAttribute('y')) || 0)
+      width = emuToW(parseInt(ext.getAttribute('cx')) || 0)
+      height = emuToH(parseInt(ext.getAttribute('cy')) || 0)
+    }
+    const rot = parseInt(xfrm.getAttribute('rot') || '0')
+    rotation = Math.round(rot / 60000)
+  }
+
   // Check if it has text
   const txBody = spNode.getElementsByTagName('p:txBody')[0]
   const hasText = txBody && txBody.getElementsByTagName('a:t').length > 0
@@ -719,11 +1021,18 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
   // Get fill color
   const fillColor = await getElementFill(spNode, zip)
 
+  let textInfo = null
   if (hasText) {
+    const effectiveBgColor = fillColor || slideBackgroundColor
+    textInfo = await parseTextBody(txBody, zip, scaleFactor, effectiveBgColor)
+  }
+
+  const isRect = shapePreset === 'rect' || shapePreset === 'roundRect'
+
+  if (hasText && isRect) {
     // Parse as text element
     // Use shape fill if available, otherwise slide background
     const effectiveBgColor = fillColor || slideBackgroundColor
-    const textInfo = await parseTextBody(txBody, zip, scaleFactor, effectiveBgColor)
 
     // Extract vertical alignment from <a:bodyPr anchor="...">
     const bodyPr = txBody.getElementsByTagName('a:bodyPr')[0]
@@ -778,10 +1087,10 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
     }
   }
 
-  // Parse as shape element (only if it has a visible fill or it's a recognized shape)
-  if (!fillColor && (shapePreset === 'rect' || shapePreset === 'roundRect')) return null // Skip invisible rects (likely layout placeholders)
+  // Parse as shape element (only if it has a visible fill, has text, or it's a recognized shape)
+  if (!fillColor && isRect && !hasText) return null // Skip invisible textless rects
   // Skip shapes that span the entire slide (usually background frames)
-  if (width >= CANVAS_W - 10 && height >= CANVAS_H - 10 && !fillColor) return null
+  if (width >= CANVAS_W - 10 && height >= CANVAS_H - 10 && !fillColor && !hasText) return null
 
   return {
     id: elementId,
@@ -791,8 +1100,15 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
     shapeType: mapShapeType(shapePreset),
     placeholderType: placeholderType,
     placeholderIdx: placeholderIdx,
-    fill: fillColor || '#4CAF50',
-    content: '',
+    fill: fillColor || (hasText ? 'transparent' : '#4CAF50'),
+    content: textInfo ? textInfo.text : '',
+    fontSize: textInfo?.runs?.[0]?.fontSize || 16,
+    fontWeight: textInfo?.runs?.[0]?.fontWeight || 400,
+    fontFamily: textInfo?.runs?.[0]?.fontFamily || 'Inter',
+    fontStyle: textInfo?.runs?.[0]?.fontStyle || 'normal',
+    textDecoration: textInfo?.runs?.[0]?.textDecoration || 'none',
+    textAlign: textInfo?.runs?.[0]?.textAlign || 'center',
+    color: textInfo?.runs?.[0]?.color || '#333333',
     opacity: 100,
     borderWidth: 0,
     borderColor: '#333333',
@@ -1131,73 +1447,122 @@ function mapShapeType(preset) {
 }
 
 /** Parse an image element (<p:pic>) */
-async function parseImageElement(picNode, elementId, emuToX, emuToY, emuToW, emuToH, relsMap, zip) {
-  // Extract userDrawn from nvPr
-  // p:pic -> p:nvPicPr -> p:nvPr -> userDrawn
-  const nvPicPr = picNode.getElementsByTagName('p:nvPicPr')[0]
+async function parseImageElement(picNode, elementId, emuToX, emuToY, emuToW, emuToH, relsMap, zip, xmlPath = null) {
+  // Extract userDrawn from nvPr (support both p:nvPicPr and p:nvSpPr)
+  let placeholderType = null
+  let placeholderIdx = null
   let userDrawn = true
+
+  const nvPicPr = picNode.getElementsByTagName('p:nvPicPr')[0] || picNode.getElementsByTagName('p:nvSpPr')[0]
   if (nvPicPr) {
     const nvPr = nvPicPr.getElementsByTagName('p:nvPr')[0]
     if (nvPr) {
       const ud = nvPr.getAttribute('userDrawn')
       if (ud === '0' || ud === 'false') userDrawn = false
+
+      const ph = nvPr.getElementsByTagName('p:ph')[0]
+      if (ph) {
+        placeholderType = ph.getAttribute('type') || null
+        placeholderIdx = ph.getAttribute('idx') || null
+      }
     }
   }
+
   const xfrm = picNode.getElementsByTagName('a:xfrm')[0]
-  if (!xfrm) return null
+  if (!xfrm && !placeholderType) return null
 
-  const off = xfrm.getElementsByTagName('a:off')[0]
-  const ext = xfrm.getElementsByTagName('a:ext')[0]
-  if (!off || !ext) return null
-
-  const x = emuToX(parseInt(off.getAttribute('x')) || 0)
-  const y = emuToY(parseInt(off.getAttribute('y')) || 0)
-  const width = emuToW(parseInt(ext.getAttribute('cx')) || 0)
-  const height = emuToH(parseInt(ext.getAttribute('cy')) || 0)
+  let x = 0, y = 0, width = 0, height = 0, rotation = 0
+  if (xfrm) {
+    const off = xfrm.getElementsByTagName('a:off')[0]
+    const ext = xfrm.getElementsByTagName('a:ext')[0]
+    if (off && ext) {
+      x = emuToX(parseInt(off.getAttribute('x')) || 0)
+      y = emuToY(parseInt(off.getAttribute('y')) || 0)
+      width = emuToW(parseInt(ext.getAttribute('cx')) || 0)
+      height = emuToH(parseInt(ext.getAttribute('cy')) || 0)
+    }
+    const rot = xfrm.getAttribute('rot')
+    if (rot) {
+      rotation = Math.round(parseInt(rot) / 60000)
+    }
+  }
 
   // Get image reference
   const blip = picNode.getElementsByTagName('a:blip')[0]
-  if (!blip) return null
+  const rEmbed = blip ? (blip.getAttribute('r:embed') || 
+                        blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed') ||
+                        blip.getAttribute('r:link') ||
+                        blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'link')) : null
 
-  const rEmbed = blip.getAttribute('r:embed') || blip.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed')
-  if (!rEmbed || !relsMap || !relsMap[rEmbed]) return null
+  let src = ''
+  if (rEmbed && relsMap && relsMap[rEmbed]) {
+    let mediaPath = relsMap[rEmbed]
+    if (xmlPath) {
+      mediaPath = resolveRelativePath(xmlPath, mediaPath)
+    } else {
+      if (mediaPath.startsWith('../')) {
+        mediaPath = 'ppt/' + mediaPath.replace('../', '')
+      } else if (!mediaPath.startsWith('ppt/')) {
+        mediaPath = 'ppt/slides/' + mediaPath
+      }
+    }
 
-  // Resolve to media path
-  let mediaPath = relsMap[rEmbed]
-  // Path is relative to ppt/slides/, so resolve it
-  if (mediaPath.startsWith('../')) {
-    mediaPath = 'ppt/' + mediaPath.replace('../', '')
-  } else if (!mediaPath.startsWith('ppt/')) {
-    mediaPath = 'ppt/slides/' + mediaPath
+    const mediaFile = zip.file(mediaPath)
+    console.log(`[PPTX IMG DEBUG] Image element: rEmbed=${rEmbed}, mediaPath=${mediaPath}, fileFound=${!!mediaFile}`)
+    if (mediaFile) {
+      try {
+        const imgData = await mediaFile.async('base64')
+        const ext = mediaPath.split('.').pop().toLowerCase()
+        const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' }
+        const mime = mimeMap[ext] || 'image/png'
+        src = `data:${mime};base64,${imgData}`
+      } catch (e) {
+        console.log(`[PPTX IMG DEBUG] Error reading image: ${e.message}`)
+      }
+    }
+  } else {
+    console.log(`[PPTX IMG DEBUG] Image skipped: rEmbed=${rEmbed}, hasRelsMap=${!!relsMap}, inMap=${rEmbed ? !!relsMap?.[rEmbed] : false}`)
   }
 
-  // Extract image as base64
-  const mediaFile = zip.file(mediaPath)
-  if (!mediaFile) return null
+  // If we couldn't resolve the source, but it's a placeholder, return it with empty src
+  if (!src && !placeholderType) return null
 
-  try {
-    const imgData = await mediaFile.async('base64')
-    const ext = mediaPath.split('.').pop().toLowerCase()
-    const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' }
-    const mime = mimeMap[ext] || 'image/png'
-    const src = `data:${mime};base64,${imgData}`
-
-    return {
-      id: elementId,
-      type: 'image',
-      userDrawn,
-      src,
-      x, y, width, height,
-      rotation: 0,
-      opacity: 100,
-      borderWidth: 0,
-      borderColor: '#333333',
-      borderRadius: 0,
-      backgroundColor: 'transparent',
-      content: '',
+  // Check for crop shape preset or custom geometry curve to apply circular border radius
+  const spPr = picNode.getElementsByTagName('p:spPr')[0] || picNode.getElementsByTagName('a:spPr')[0] || picNode
+  const prstGeom = spPr.getElementsByTagName('a:prstGeom')[0]
+  const shapePreset = prstGeom ? prstGeom.getAttribute('prst') : 'rect'
+  
+  const custGeom = spPr.getElementsByTagName('a:custGeom')[0]
+  let borderRadius = shapePreset === 'ellipse' ? '50%' : 0
+  
+  if (custGeom && !borderRadius) {
+    const path = custGeom.getElementsByTagName('a:path')[0]
+    if (path) {
+      const w = parseFloat(path.getAttribute('w') || '0')
+      const h = parseFloat(path.getAttribute('h') || '0')
+      const hasCurves = custGeom.getElementsByTagName('a:cubicBezTo').length > 0
+      // If the path contains curve instructions and is square-ish (aspect ratio near 1:1), treat as circular
+      if (hasCurves && w > 0 && h > 0 && Math.abs(w - h) / w < 0.05) {
+        borderRadius = '50%'
+      }
     }
-  } catch (e) {
-    return null // Skip if image can't be extracted
+  }
+
+  return {
+    id: elementId,
+    type: 'image',
+    userDrawn,
+    src,
+    x, y, width, height,
+    rotation,
+    opacity: 100,
+    borderWidth: 0,
+    borderColor: '#333333',
+    borderRadius,
+    backgroundColor: 'transparent',
+    content: '',
+    placeholderType,
+    placeholderIdx
   }
 }
 
@@ -1340,37 +1705,19 @@ function mergeElements(layoutElements, slideElements) {
         layoutPlaceholders.delete(key) // Mark consumed
 
         // Inherit geometry if slide element is missing it (or if it's default 0,0,0,0)
-        // Check if slide element has valid transform (not 0,0)
-        // Actually, parseShapeElement sets 0,0 if off/ext are missing.
-        // We can check if it was marked as having no xfrm, but we didn't add that flag yet.
-        // Heuristic: if x,y,w,h are all 0, it likely needs inheritance.
-        // BETTER: The user request says "If slide transform is missing".
-        // In parseShapeElement we default to 0. Let's assume if w<5 and h<5 it's invalid/missing
-        // BUT we filter out small elements.
-        // Let's rely on a new property `isPlaceholderInit` or similar if we added it.
-        // Since we didn't, let's look at the element.
-
-        // If the slide element is a "prompt" placeholder (has no text content yet), it usually inherits everything.
-        // If it has content, it might still inherit position.
-
-        // Logic: If the slide element's position is 0,0 (or we decide it's implicit), take layout's.
-        // PPTX "off" is usually explicit. If it's missing in XML, it implies inheritance.
-        // Our parser defaults to 0 if missing.
-        // Let's check if the generic parser logic extracted 0,0,0,0.
-
         if (el.x === 0 && el.y === 0 && (el.width === 0 || el.width < 5)) {
           el.x = layoutEl.x
           el.y = layoutEl.y
           el.width = layoutEl.width
           el.height = layoutEl.height
           el.rotation = layoutEl.rotation
+          if (layoutEl.borderRadius) {
+            el.borderRadius = layoutEl.borderRadius
+          }
         }
 
         // Inherit Styling (Font, Color, Alignment)
         // If the slide element seems to use defaults (e.g. fontSize 16), try to inherit from layout
-        // logical check: if layout has a specific style, use it.
-        // We prioritize layout style for placeholders unless slide explicitly overrides (which is hard to detect perfectly without flags)
-
         // 1. Font Size (if slide is 16 default or very small, and layout is different)
         if ((el.fontSize === 16 || el.fontSize < 10) && layoutEl.fontSize) {
           el.fontSize = layoutEl.fontSize
@@ -1382,7 +1729,6 @@ function mergeElements(layoutElements, slideElements) {
         }
 
         // 3. Color (if slide is default black/dark and layout has color)
-        // Check if color is generic black/gray
         const isGenericColor = el.color === '#000000' || el.color === '#333333'
         if (isGenericColor && layoutEl.color && layoutEl.color !== '#000000') {
           el.color = layoutEl.color
@@ -1406,22 +1752,37 @@ function mergeElements(layoutElements, slideElements) {
           })
         }
 
-        // Inherit stlye if missing
+        // Inherit style if missing
         if (!el.fill && layoutEl.fill) el.fill = layoutEl.fill
-        if ((!el.runs || el.runs.length === 0) && layoutEl.runs) {
-          // Keep layout text as prompt? Usually no, but we might want style.
-          // For now, focus on geometry.
-        }
+        
+        // If the slide placeholder was matched but has no text content and no source image, mark it as isPlaceholder
+        el.isPlaceholder = !el.content && !el.src
+      } else {
+        el.isPlaceholder = !el.content && !el.src
       }
+    } else {
+      el.isPlaceholder = false
     }
     mergedEvents.push(el)
   }
 
-  // Add remaining (unfilled) layout placeholders
+  // Add remaining (unfilled) layout placeholders (only keep text placeholders to avoid raw shape placeholders)
   const remainingLayoutPlaceholders = Array.from(layoutPlaceholders.values())
+    .filter(el => el.type === 'text')
+  remainingLayoutPlaceholders.forEach(el => {
+    el.isPlaceholder = true
+  })
 
-  // Return: Layout Content (backgrounds) + Remaining Layout Placeholders + Slide Elements
-  return [...layoutContent, ...remainingLayoutPlaceholders, ...mergedEvents]
+  // Combine Layout Content (e.g. backgrounds) + Unfilled Layout Placeholders + Slide Elements
+  const combined = [...layoutContent, ...remainingLayoutPlaceholders, ...mergedEvents]
+
+  // Filter out any placeholders that are empty and have zero/near-zero size to avoid clutter
+  return combined.filter(el => {
+    if (el.isPlaceholder && (el.width <= 5 || el.height <= 5)) {
+      return false
+    }
+    return true
+  })
 }
 
 /** Apply luminance modulation and offset to a hex color */
