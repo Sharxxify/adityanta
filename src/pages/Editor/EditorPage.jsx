@@ -2454,7 +2454,11 @@ const EditorPage = () => {
             <img
               src={element.src}
               alt={element.caption || "canvas"}
-              className={`${element.caption && element.showCaption ? 'flex-1' : 'w-full h-full'} object-contain rounded`} style={{ transform: (`${element.flipH ? 'scaleX(-1)' : ''} ${element.flipV ? 'scaleY(-1)' : ''}`).trim() || undefined }}
+              className={`${element.caption && element.showCaption ? 'flex-1' : 'w-full h-full'} object-contain rounded`}
+              style={{
+                transform: (`${element.flipH ? 'scaleX(-1)' : ''} ${element.flipV ? 'scaleY(-1)' : ''}`).trim() || undefined,
+                borderRadius: typeof element.borderRadius === 'number' ? `${element.borderRadius}px` : (element.borderRadius || undefined)
+              }}
               draggable={false}
               onError={(e) => {
                 e.target.style.display = 'none'

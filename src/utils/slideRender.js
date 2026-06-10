@@ -258,7 +258,17 @@ const createImageNode = (element, scaleX, scaleY) => {
   img.style.width = '100%'
   img.style.height = element.caption && element.showCaption ? 'calc(100% - 28px)' : '100%'
   img.style.objectFit = element.objectFit || 'cover'
-  img.style.borderRadius = toPx((element.borderRadius || 6) * Math.min(scaleX, scaleY))
+  let borderRadiusVal = '6px'
+  if (element.borderRadius !== undefined) {
+    if (typeof element.borderRadius === 'string' && element.borderRadius.endsWith('%')) {
+      borderRadiusVal = element.borderRadius
+    } else {
+      borderRadiusVal = toPx(Number(element.borderRadius || 0) * Math.min(scaleX, scaleY))
+    }
+  } else {
+    borderRadiusVal = toPx(6 * Math.min(scaleX, scaleY))
+  }
+  img.style.borderRadius = borderRadiusVal
   wrapper.appendChild(img)
 
   if (element.caption && element.showCaption) {
