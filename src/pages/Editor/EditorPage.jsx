@@ -638,9 +638,9 @@ const EditorPage = () => {
     try {
       const saved = localStorage.getItem(NAV_SPEED_KEY)
       const num = Number(saved)
-     if (Number.isFinite(num) && num >= 1500 && num <= 4000) return num
+      if (Number.isFinite(num) && num >= 300 && num <= 3000) return num
     } catch (_e) { /* localStorage unavailable */ }
-    return 1400
+    return 1500
   })
 
   // Persist navigation speed whenever it changes
@@ -1445,8 +1445,10 @@ const EditorPage = () => {
   const [isNavigating, setIsNavigating] = useState(false); // Used to disable CSS transition
 
   const handlePanStart = (e) => {
-    // middle click (button 1) or isPanning (hand tool)
-    if (e.button === 1 || isPanning) {
+    // middle click (button 1) or isPanning (hand tool) always pan
+    // left-click drag only pans when nothing is selected
+    const canPan = e.button === 1 || isPanning || (!selectedElementId && e.button === 0)
+    if (canPan) {
       e.preventDefault()
       setIsDraggingPan(true)
       setIsNavigating(true)
@@ -1459,7 +1461,7 @@ const EditorPage = () => {
     }
   }
 
- const handleWheel = (e) => {
+  const handleWheel = (e) => {
     // React's onWheel is passive, so preventDefault here is a best-effort
     // (we also attach a native non-passive listener below for real prevention).
     if (showVersionHistory || showShortcutsModal || showSlideMaster || showAnimationPanel) return;
@@ -1471,14 +1473,14 @@ const EditorPage = () => {
 
     setCamera(prev => {
       if (e.ctrlKey || e.metaKey) {
-        // Zoom — smoother curve via exponential mapping
-        // deltaY is usually ±100 per tick; exp(deltaY * -0.0015) gives ~1.17x per tick
+        // Zoom always works regardless of selection
         const ZOOM_SENSITIVITY = 0.0015;
         const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
         let newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 15.0);
         return { ...prev, zoom: newZoom };
       } else {
-        // Pan — divide by zoom so pan speed feels constant at any zoom level
+        // Pan — only when no element is selected
+        if (selectedElementId) return prev;
         return {
           ...prev,
           panX: prev.panX - e.deltaX / prev.zoom,
@@ -4459,7 +4461,7 @@ const handleAddFrame = useCallback((templateType) => {
         {/* Canvas Area - keep slide fully visible, centered horizontally, toolbar separated below */}
         <div
           ref={canvasRef}
-          className={`flex-1 flex flex-col canvas-area relative ${isDragOver ? 'bg-primary/10' : ''} ${isPanning ? (isDraggingPan ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
+          className={`flex-1 flex flex-col canvas-area relative ${isDragOver ? 'bg-primary/10' : ''} ${isPanning && !selectedElementId ? (isDraggingPan ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
           style={{
             background: editorBgImage
               ? `radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px), url("${editorBgImage}") center/cover no-repeat`
@@ -5372,14 +5374,14 @@ const handleAddFrame = useCallback((templateType) => {
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400">Fast</span>
                 <input
-                 type="range" min="1500" max="4000" step="100"
+                  type="range" min="300" max="3000" step="100"
                   value={navSpeedMs}
                   onChange={e => setNavSpeedMs(Number(e.target.value))}
                   className="flex-1"
                 />
                 <span className="text-xs text-gray-400">Slow</span>
               </div>
-              <p className="text-xs text-gray-400 text-center mt-0.5">{navSpeedMs}ms</p>
+              <p className="text-xs text-gray-400 text-center mt-0.5">{(navSpeedMs / 1000).toFixed(1)}s</p>
             </div>
           </div>
           </>
