@@ -48,6 +48,8 @@ const RightClickMenu = ({ x, y, onClose, onAction, hasSelection = false, current
       { id: 'bringToFront', label: 'Bring to Front', icon: 'layerUp' },
       { id: 'sendToBack', label: 'Send to Back', icon: 'layerDown' },
       { type: 'divider' },
+      { id: 'color', label: 'Change Color', icon: 'palette', hasSubmenu: true },
+      { type: 'divider' },
     ] : []),
     { id: 'paste', label: 'Paste', icon: 'clipboard' },
     { type: 'divider' },

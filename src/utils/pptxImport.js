@@ -1079,6 +1079,7 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
       placeholderType: placeholderType,
       placeholderIdx: placeholderIdx,
       color: textInfo.runs?.[0]?.color || '#333333',
+      hasExplicitColor: textInfo.runs?.[0]?.hasExplicitColor || false,
       opacity: 100,
       borderWidth: 0,
       borderColor: '#333333',
@@ -1305,6 +1306,7 @@ async function parseTextBody(txBody, zip, scaleFactor, slideBackgroundColor) {
 
       // 4. Color
       let color = '#000000'
+      let hasExplicitColor = false
 
       let val = null
       let lumMod = undefined
@@ -1317,6 +1319,7 @@ async function parseTextBody(txBody, zip, scaleFactor, slideBackgroundColor) {
       if (!solidFill && defRPr) solidFill = defRPr.getElementsByTagName('a:solidFill')[0]
 
       if (solidFill) {
+        hasExplicitColor = true
         const srgb = solidFill.getElementsByTagName('a:srgbClr')[0]
         const schemeClr = solidFill.getElementsByTagName('a:schemeClr')[0]
 
@@ -1365,6 +1368,7 @@ async function parseTextBody(txBody, zip, scaleFactor, slideBackgroundColor) {
         textDecoration,
         fontFamily,
         color,
+        hasExplicitColor,
         textAlign,
         strike: strikeAttr === 'sng' ? 'line-through' : 'none',
         baseline: parseInt(baselineAttr || '0'),
@@ -1729,8 +1733,8 @@ function mergeElements(layoutElements, slideElements) {
         }
 
         // 3. Color (if slide is default black/dark and layout has color)
-        const isGenericColor = el.color === '#000000' || el.color === '#333333'
-        if (isGenericColor && layoutEl.color && layoutEl.color !== '#000000') {
+        // Only inherit layout color if slide doesn't have an explicit color
+        if (!el.hasExplicitColor && layoutEl.color && layoutEl.color !== '#000000') {
           el.color = layoutEl.color
         }
 
@@ -1748,7 +1752,7 @@ function mergeElements(layoutElements, slideElements) {
             // Inherit properties if run matches element's previous (default) state
             if (run.fontSize === 16 && layoutEl.fontSize) run.fontSize = layoutEl.fontSize
             if ((!run.fontFamily || run.fontFamily.startsWith('Raleway')) && layoutEl.fontFamily) run.fontFamily = layoutEl.fontFamily
-            if ((run.color === '#000000' || run.color === '#333333') && layoutEl.color) run.color = layoutEl.color
+            if (!run.hasExplicitColor && layoutEl.color) run.color = layoutEl.color
           })
         }
 

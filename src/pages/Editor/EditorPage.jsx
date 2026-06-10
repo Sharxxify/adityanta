@@ -1896,6 +1896,7 @@ const EditorPage = () => {
 
     updateElement(elementId, {
       content: newContent,
+      runs: null,
       height: Math.max(Number(currentElement.height) || 50, neededHeight),
     })
   }
@@ -2154,6 +2155,25 @@ const EditorPage = () => {
   const renderTextContent = (element) => {
     const content = element.content || ''
     const listType = element.listType || 'none'
+
+    if (element.runs && element.runs.length > 0) {
+      return element.runs.map((run, index) => {
+        const style = {
+          fontSize: run.fontSize ? `${run.fontSize}px` : undefined,
+          fontWeight: run.fontWeight,
+          fontFamily: run.fontFamily,
+          fontStyle: run.fontStyle,
+          textDecoration: run.textDecoration,
+          color: run.color,
+          lineHeight: run.lineHeight,
+        }
+        return (
+          <span key={index} style={style}>
+            {run.text}
+          </span>
+        )
+      })
+    }
 
     if (listType === 'none' || !content) {
       return content
