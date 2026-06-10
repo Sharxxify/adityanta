@@ -283,9 +283,9 @@ const PresentationPage = () => {
     try {
       const saved = localStorage.getItem('adityanta_nav_speed_ms')
       const num = Number(saved)
-      if (Number.isFinite(num) && num >= 200 && num <= 4000) return num
+      if (Number.isFinite(num) && num >= 300 && num <= 3000) return num
     } catch (_e) { /* ignore */ }
-    return 3000
+    return 1500
   })
 
   const getAnimationClass = (animation) => {
@@ -680,7 +680,9 @@ const PresentationPage = () => {
     // duration for an "average" jump (auto-scaled by path length).
     const VAN_WIJK_RHO = 1.6
     const VAN_WIJK_RHO_SQ = VAN_WIJK_RHO * VAN_WIJK_RHO
-    const VAN_WIJK_BASE_DURATION = 1600
+    // navSpeedMs from the editor slider is the full-path duration for a "standard" jump.
+    // We scale it down slightly for the base so very long paths don't feel sluggish.
+    const VAN_WIJK_BASE_DURATION = navSpeedMs * 0.7
 
     const cameraAnimRef = useRef({ raf: null, token: 0 })
 
