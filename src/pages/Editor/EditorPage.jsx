@@ -1447,6 +1447,9 @@ const EditorPage = () => {
   const handlePanStart = (e) => {
     // middle click (button 1) or isPanning (hand tool) always pan
     // left-click drag only pans when nothing is selected
+    // Stylus (pointerType === 'pen') fires PointerEvents; the synthetic
+    // MouseEvent from the browser usually works, but touch-action:none on
+    // the canvas + dual listeners below make it reliable.
     const canPan = e.button === 1 || isPanning || (!selectedElementId && e.button === 0)
     if (canPan) {
       e.preventDefault()
@@ -1513,9 +1516,14 @@ const EditorPage = () => {
 
     window.addEventListener('mousemove', handlePanMove)
     window.addEventListener('mouseup', handlePanEnd)
+    // Pointer events for stylus / pen-tablet support
+    window.addEventListener('pointermove', handlePanMove)
+    window.addEventListener('pointerup', handlePanEnd)
     return () => {
       window.removeEventListener('mousemove', handlePanMove)
       window.removeEventListener('mouseup', handlePanEnd)
+      window.removeEventListener('pointermove', handlePanMove)
+      window.removeEventListener('pointerup', handlePanEnd)
     }
   }, [isDraggingPan, panStart, camera.zoom, isPanning])
 
@@ -1871,9 +1879,14 @@ const EditorPage = () => {
     if (isDragPending || isDragging || isResizing || draggingFrameId || isResizingFrame) {
       document.addEventListener('mousemove', handleMouseMove)
       document.addEventListener('mouseup', handleMouseUp)
+      // Pointer events for stylus / pen-tablet support
+      document.addEventListener('pointermove', handleMouseMove)
+      document.addEventListener('pointerup', handleMouseUp)
       return () => {
         document.removeEventListener('mousemove', handleMouseMove)
         document.removeEventListener('mouseup', handleMouseUp)
+        document.removeEventListener('pointermove', handleMouseMove)
+        document.removeEventListener('pointerup', handleMouseUp)
       }
     }
   }, [isDragPending, isDragging, isResizing, handleDragMove, handleDragEnd, handleResizeMove, handleResizeEnd, handleFrameDragMove, handleFrameDragEnd, draggingFrameId, isResizingFrame, handleFrameResizeMove, handleFrameResizeEnd])
@@ -1885,7 +1898,25 @@ const EditorPage = () => {
       updateElement(elementId, { content: newContent })
       return
     }
-    const fontSize = Number(currentElement.fontSize) || 16
+    
+    let fontSize = Number(currentElement.fontSize) || 16
+
+    // If we are about to clear rich-text runs, adopt the dominant font size 
+    // (weighted by text length) so body text doesn't blow up to the heading's size.
+    if (currentElement.runs && currentElement.runs.length > 0) {
+      const counts = {}
+      let maxCount = 0
+      currentElement.runs.forEach(r => {
+        const sz = Number(r.fontSize) || fontSize
+        const len = (r.text || '').length
+        counts[sz] = (counts[sz] || 0) + len
+        if (counts[sz] > maxCount) {
+          maxCount = counts[sz]
+          fontSize = sz
+        }
+      })
+    }
+
     const usableWidth = Math.max(40, (Number(currentElement.width) || 120) - 12)
     const avgCharWidth = Math.max(4, fontSize * 0.55)
     const maxCharsPerLine = Math.max(8, Math.floor(usableWidth / avgCharWidth))
@@ -1897,6 +1928,7 @@ const EditorPage = () => {
     updateElement(elementId, {
       content: newContent,
       runs: null,
+      fontSize: fontSize,
       height: Math.max(Number(currentElement.height) || 50, neededHeight),
     })
   }
@@ -2307,6 +2339,7 @@ const EditorPage = () => {
                 commitHistory() // Commit text edit to history
               }}
               onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 e.stopPropagation()
                 // Escape to finish editing
@@ -2435,6 +2468,7 @@ const EditorPage = () => {
                 onChange={(e) => handleTextChange(element.id, e.target.value)}
                 onBlur={() => setEditingTextId(null)}
                 onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   e.stopPropagation()
                   if (e.key === 'Escape') {
@@ -2501,6 +2535,7 @@ const EditorPage = () => {
                   onChange={(e) => updateElement(element.id, { caption: e.target.value })}
                   onBlur={() => setEditingTextId(null)}
                   onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
                     e.stopPropagation()
                     if (e.key === 'Escape') {
@@ -3021,6 +3056,7 @@ const EditorPage = () => {
                   onChange={(e) => handleTextChange(element.id, e.target.value)}
                   onBlur={() => setEditingTextId(null)}
                   onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
                     e.stopPropagation()
                     if (e.key === 'Escape') {
@@ -4497,11 +4533,12 @@ const handleAddFrame = useCallback((templateType) => {
             minHeight: 0,
             overflow: 'hidden',
             transition: 'all 0.2s ease',
+            touchAction: 'none', // Prevent browser from intercepting stylus/touch for scroll/zoom
           }}
           onClick={handleCanvasClick}
           onDoubleClick={handleCanvasDoubleClick}
           onContextMenu={handleContextMenu}
-          onMouseDown={handlePanStart}
+          onPointerDown={handlePanStart}
           onWheel={handleWheel}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -4603,6 +4640,8 @@ const handleAddFrame = useCallback((templateType) => {
                       const onUp = () => {
                         window.removeEventListener('mousemove', onMove)
                         window.removeEventListener('mouseup', onUp)
+                        window.removeEventListener('pointermove', onMove)
+                        window.removeEventListener('pointerup', onUp)
                         if (!didDrag) {
                           // Treat as click → select header.
                           setHeaderSelected(true)
@@ -4613,6 +4652,8 @@ const handleAddFrame = useCallback((templateType) => {
                       }
                       window.addEventListener('mousemove', onMove)
                       window.addEventListener('mouseup', onUp)
+                      window.addEventListener('pointermove', onMove)
+                      window.addEventListener('pointerup', onUp)
                       e.stopPropagation()
                     }}
                     onDoubleClick={(e) => {
@@ -4740,7 +4781,7 @@ const handleAddFrame = useCallback((templateType) => {
                     <div
                       onClick={() => handleFrameSingleClick(frameBox.id)}
                       onDoubleClick={() => handleFrameDoubleClick(frameBox.id)}
-                      onMouseDown={(e) => { if (!isResizingFrame) handleFrameDragStart(e, frameBox) }}
+                      onPointerDown={(e) => { if (!isResizingFrame) handleFrameDragStart(e, frameBox) }}
                       className="absolute inset-0"
                       style={{
                         cursor: frameCursor,
@@ -4770,7 +4811,7 @@ const handleAddFrame = useCallback((templateType) => {
                           key={`${element.id}-${selected ? animationKey : 'static'}`}
                           onClick={(e) => handleElementClick(element, e)}
                           onDoubleClick={(e) => handleElementDoubleClick(element, e)}
-                          onMouseDown={(e) => {
+                          onPointerDown={(e) => {
                             if (!isResizing && editingTextId !== element.id && !element.isPlaceholder) {
                               handleDragStart(e, element)
                             }
