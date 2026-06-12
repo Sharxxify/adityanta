@@ -1507,7 +1507,7 @@ const EditorPage = () => {
     }
 
     const handlePanEnd = (e) => {
-      if (e.button !== 1 && !isPanning) return; // only end on middle/left depending
+      if (e.button !== 1 && e.button !== 0 && !isPanning) return; // allow middle or left click to end pan
       if (isDraggingPan) {
         setIsDraggingPan(false)
         setIsNavigating(false)
