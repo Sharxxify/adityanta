@@ -1675,7 +1675,7 @@ const EditorPage = () => {
       // Trackpads emit many high-frequency events with small deltaY values (usually < 40).
       // Mouse wheels emit discrete ticks (usually >= 100).
       const isTrackpad = Math.abs(e.deltaY) < 40;
-      const ZOOM_SENSITIVITY = isTrackpad ? 0.008 : 0.0025;
+      const ZOOM_SENSITIVITY = isTrackpad ? 0.024 : 0.0025;
       
       let rect = null;
       let screenX = 0;
