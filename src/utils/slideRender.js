@@ -164,6 +164,36 @@ const applyBaseStyles = (node, element, scaleX, scaleY) => {
   node.style.overflow = 'hidden'
 }
 
+const convertRunsToHtml = (runs, scale = 1) => {
+  if (!runs || runs.length === 0) return ''
+  return runs.map(run => {
+    if (run.text === '\n') return '<br>'
+    
+    const styles = []
+    if (run.fontSize) styles.push(`font-size:${Math.round(run.fontSize * scale)}px`)
+    if (run.fontWeight) {
+      styles.push(`font-weight:${run.fontWeight === 'bold' || run.fontWeight === 700 ? 'bold' : 'normal'}`)
+    }
+    if (run.fontFamily) styles.push(`font-family:${run.fontFamily}`)
+    if (run.fontStyle && run.fontStyle !== 'normal') styles.push(`font-style:${run.fontStyle}`)
+    if (run.textDecoration && run.textDecoration !== 'none') styles.push(`text-decoration:${run.textDecoration}`)
+    if (run.color) styles.push(`color:${run.color}`)
+    if (run.lineHeight) styles.push(`line-height:${run.lineHeight}`)
+    
+    const styleAttr = styles.length > 0 ? ` style="${styles.join(';')}"` : ''
+    const escapedText = (run.text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+    
+    if (styleAttr) {
+      return `<span${styleAttr}>${escapedText}</span>`
+    }
+    return escapedText
+  }).join('')
+}
+
 const createTextNode = (element, scaleX, scaleY, extra = {}) => {
   const align = getTextAlign(element.textAlign)
   const node = document.createElement('div')
@@ -191,7 +221,52 @@ const createTextNode = (element, scaleX, scaleY, extra = {}) => {
   if (element.borderRadius) {
     node.style.borderRadius = toPx(element.borderRadius * Math.min(scaleX, scaleY))
   }
-  node.textContent = element.content || ''
+  
+  const scale = Math.min(scaleX, scaleY)
+  if (element.runs && element.runs.length > 0) {
+    node.innerHTML = convertRunsToHtml(element.runs, scale)
+  } else {
+    const listType = element.listType || 'none'
+    const content = element.content || ''
+    
+    if (listType !== 'none' && content && !content.includes('<ul') && !content.includes('<ol')) {
+      const lines = content.split('\n')
+      let itemIndex = 0
+      node.innerHTML = lines.map((line) => {
+        if (!line.trim()) return '<div>&nbsp;</div>'
+        itemIndex++
+        let prefix = '•'
+        switch (listType) {
+          case 'bullet': prefix = '•'; break
+          case 'bullet-hollow': prefix = '○'; break
+          case 'bullet-square': prefix = '■'; break
+          case 'bullet-dash': prefix = '-'; break
+          case 'bullet-arrow': prefix = '➔'; break
+          case 'bullet-check': prefix = '✓'; break
+          case 'bullet-star': prefix = '★'; break
+          case 'numbered': prefix = `${itemIndex}.`; break
+          case 'numbered-paren': prefix = `${itemIndex})`; break
+          case 'alpha': prefix = `${String.fromCharCode(65 + ((itemIndex - 1) % 26))}.`; break
+          case 'alpha-lower': prefix = `${String.fromCharCode(97 + ((itemIndex - 1) % 26))}.`; break
+          case 'roman': {
+            const lookup = { M: 1000, CM: 900, D: 500, CD: 400, C: 100, XC: 90, L: 50, XL: 40, X: 10, IX: 9, V: 5, IV: 4, I: 1 }
+            let roman = '', num = itemIndex
+            for (let i in lookup) {
+              while (num >= lookup[i]) {
+                roman += i
+                num -= lookup[i]
+              }
+            }
+            prefix = `${roman}.`;
+            break
+          }
+        }
+        return `<div style="display:flex;"><span style="flex-shrink:0;width:32px;">${prefix}</span><span>${line}</span></div>`
+      }).join('')
+    } else {
+      node.innerHTML = content
+    }
+  }
   return node
 }
 

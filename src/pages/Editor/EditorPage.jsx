@@ -566,9 +566,197 @@ const EditorPage = () => {
   }, [editorBackground, defaultEditorBg, setEditorBackground])
 
   // Local UI state
+  const [editingTextId, setEditingTextId] = useState(null)
   const [showMediaDropdown, setShowMediaDropdown] = useState(false)
   const [showShareDropdown, setShowShareDropdown] = useState(false)
   const [showTextToolbar, setShowTextToolbar] = useState(false)
+  const [selectionFormatting, setSelectionFormatting] = useState({})
+  const editableDivRef = useRef(null)
+  const savedRangeRef = useRef(null)
+
+  const convertRunsToHtml = (runs) => {
+    if (!runs || runs.length === 0) return ''
+    return runs.map(run => {
+      if (run.text === '\n') return '<br>'
+      
+      const styles = []
+      if (run.fontSize) styles.push(`font-size:${run.fontSize}px`)
+      if (run.fontWeight) {
+        styles.push(`font-weight:${run.fontWeight === 'bold' || run.fontWeight === 700 ? 'bold' : 'normal'}`)
+      }
+      if (run.fontFamily) styles.push(`font-family:${run.fontFamily}`)
+      if (run.fontStyle && run.fontStyle !== 'normal') styles.push(`font-style:${run.fontStyle}`)
+      if (run.textDecoration && run.textDecoration !== 'none') styles.push(`text-decoration:${run.textDecoration}`)
+      if (run.color) styles.push(`color:${run.color}`)
+      if (run.lineHeight) styles.push(`line-height:${run.lineHeight}`)
+      
+      const styleAttr = styles.length > 0 ? ` style="${styles.join(';')}"` : ''
+      const escapedText = (run.text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>')
+      
+      if (styleAttr) {
+        return `<span${styleAttr}>${escapedText}</span>`
+      }
+      return escapedText
+    }).join('')
+  }
+
+  const rgbToHex = (rgb) => {
+    if (!rgb) return '#1a1a1a'
+    const match = rgb.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/)
+    if (!match) return rgb
+    const r = parseInt(match[1]).toString(16).padStart(2, '0')
+    const g = parseInt(match[2]).toString(16).padStart(2, '0')
+    const b = parseInt(match[3]).toString(16).padStart(2, '0')
+    return `#${r}${g}${b}`
+  }
+
+  const saveSelection = () => {
+    const sel = window.getSelection()
+    if (sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0)
+      const activeEl = document.activeElement
+      if (activeEl && activeEl.isContentEditable && activeEl.contains(range.commonAncestorContainer)) {
+        savedRangeRef.current = range
+      }
+    }
+  }
+
+  const restoreSelection = () => {
+    if (savedRangeRef.current) {
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(savedRangeRef.current)
+    }
+  }
+
+  const updateSelectionFormatting = () => {
+    const sel = window.getSelection()
+    if (!sel.rangeCount) return
+
+    const range = sel.getRangeAt(0)
+    let node = range.startContainer
+    if (node.nodeType === Node.TEXT_NODE) {
+      node = node.parentNode
+    }
+
+    const editableEl = document.querySelector('[data-text-editable="true"]') || editableDivRef.current
+    if (editableEl && editableEl.contains(node)) {
+      const computedStyle = window.getComputedStyle(node)
+      setSelectionFormatting({
+        fontSize: parseFloat(computedStyle.fontSize) || 16,
+        fontWeight: computedStyle.fontWeight === 'bold' || parseInt(computedStyle.fontWeight) >= 700 ? 'bold' : 'normal',
+        fontStyle: computedStyle.fontStyle === 'italic' ? 'italic' : 'normal',
+        textDecoration: computedStyle.textDecoration.includes('underline') ? 'underline' : 'none',
+        color: rgbToHex(computedStyle.color),
+        fontFamily: computedStyle.fontFamily.replace(/['"]/g, '').split(',')[0].trim(),
+      })
+    }
+  }
+
+  const applyStyleToSelection = (updates) => {
+    restoreSelection()
+    
+    try {
+      document.execCommand('styleWithCSS', false, true)
+    } catch (e) {}
+
+    Object.keys(updates).forEach(key => {
+      const val = updates[key]
+      if (key === 'fontWeight') {
+        document.execCommand('bold', false, null)
+      } else if (key === 'fontStyle') {
+        document.execCommand('italic', false, null)
+      } else if (key === 'textDecoration') {
+        document.execCommand('underline', false, null)
+      } else if (key === 'color') {
+        document.execCommand('foreColor', false, val)
+      } else if (key === 'fontFamily') {
+        document.execCommand('fontName', false, val)
+      } else if (key === 'fontSize') {
+        const selection = window.getSelection()
+        if (selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0)
+          const span = document.createElement('span')
+          span.style.fontSize = typeof val === 'number' ? `${val}px` : val
+          
+          if (range.collapsed) {
+            try {
+              span.appendChild(document.createTextNode('\u200B'))
+              range.insertNode(span)
+              
+              const newRange = document.createRange()
+              newRange.setStart(span.firstChild, 1)
+              newRange.setEnd(span.firstChild, 1)
+              selection.removeAllRanges()
+              selection.addRange(newRange)
+            } catch (err) {
+              console.error('Failed to set font size on collapsed range:', err)
+            }
+          } else {
+            try {
+              const fragment = range.extractContents()
+              span.appendChild(fragment)
+              range.insertNode(span)
+              
+              const newRange = document.createRange()
+              newRange.selectNodeContents(span)
+              selection.removeAllRanges()
+              selection.addRange(newRange)
+            } catch (err) {
+              console.error('Failed to set font size on selection:', err)
+            }
+          }
+        }
+      }
+    })
+
+    const activeEl = document.querySelector('[data-text-editable="true"]') || editableDivRef.current
+    if (activeEl && activeEl.isContentEditable) {
+      updateElement(selectedElementId, {
+        content: activeEl.innerHTML,
+        runs: null,
+      })
+      activeEl.focus()
+    }
+  }
+
+  useEffect(() => {
+    if (!editingTextId) return
+
+    const handleSelectionChange = () => {
+      saveSelection()
+      updateSelectionFormatting()
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+    }
+  }, [editingTextId])
+
+  useEffect(() => {
+    if (editingTextId && editableDivRef.current) {
+      const el = editableDivRef.current
+      el.focus()
+      
+      try {
+        const range = document.createRange()
+        const sel = window.getSelection()
+        range.selectNodeContents(el)
+        range.collapse(false) // collapse to end
+        sel.removeAllRanges()
+        sel.addRange(range)
+        savedRangeRef.current = range
+      } catch (err) {
+        console.error('Failed to focus/set cursor:', err)
+      }
+    }
+  }, [editingTextId])
+
   // Header (singleton project-level text) selection + inline-edit state
   const [headerSelected, setHeaderSelected] = useState(false)
   const [headerEditing, setHeaderEditing] = useState(false)
@@ -616,7 +804,6 @@ const EditorPage = () => {
   const [tableGridHover, setTableGridHover] = useState({ rows: 0, cols: 0 })
   const [templateGradient, setTemplateGradient] = useState(null)
   const [templateThumbnailUrl, setTemplateThumbnailUrl] = useState(null)
-  const [editingTextId, setEditingTextId] = useState(null)
   const [showShortcutsModal, setShowShortcutsModal] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showSlideMaster, setShowSlideMaster] = useState(false)
@@ -1560,10 +1747,9 @@ const EditorPage = () => {
     // Auto-expand the right panel when something is selected (context-aware)
     setRightPanelCollapsed(false)
     setIsFrameFocused(true)
-    if (element.type === 'text') {
+    if (element.type === 'text' || element.type === 'shape') {
       setShowTextToolbar(true)
-      // If it's a placeholder, start editing immediately on single click
-      if (element.isPlaceholder) {
+      if (element.type === 'text' && element.isPlaceholder) {
         handlePlaceholderEdit(element)
       }
     } else {
@@ -2208,7 +2394,7 @@ const EditorPage = () => {
     }
 
     if (listType === 'none' || !content) {
-      return content
+      return <div dangerouslySetInnerHTML={{ __html: content }} style={{ width: '100%', height: '100%' }} />
     }
 
     const lines = content.split('\n')
@@ -2238,7 +2424,7 @@ const EditorPage = () => {
       return (
         <div key={index} className="flex">
           <span className="flex-shrink-0 w-8">{prefix}</span>
-          <span>{line}</span>
+          <span dangerouslySetInnerHTML={{ __html: line }}></span>
         </div>
       )
     })
@@ -2315,49 +2501,77 @@ const EditorPage = () => {
     switch (element.type) {
       case 'text':
         if (editingTextId === element.id) {
+          const initialHtml = element.runs && element.runs.length > 0 
+            ? convertRunsToHtml(element.runs) 
+            : (element.content || '')
+
           return (
-            <textarea
-              className="w-full h-full bg-transparent border-none outline-none resize-none whitespace-pre-wrap text-editable relative z-20"
+            <div
+              ref={editableDivRef}
+              contentEditable
+              suppressContentEditableWarning
+              data-text-editable="true"
+              className="w-full h-full bg-transparent border-none outline-none resize-none whitespace-pre-wrap text-editable relative z-20 overflow-y-auto"
               style={{
                 fontSize: element.fontSize,
                 fontWeight: element.fontWeight,
                 fontFamily: element.fontFamily || 'Inter',
-                fontStyle: element.fontStyle || 'normal',
+                fontStyle: element.isPlaceholder ? 'italic' : (element.fontStyle || 'normal'),
                 textDecoration: element.textDecoration || 'none',
                 textAlign: element.textAlign || 'left',
-                color: element.color,
+                color: element.isPlaceholder ? '#9ca3af' : element.color,
                 lineHeight: 1.5,
                 paddingTop: element.padding?.top ?? 8, paddingBottom: element.padding?.bottom ?? 8, paddingLeft: element.padding?.left ?? 8, paddingRight: element.padding?.right ?? 8, border: element.borderWidth ? `${element.borderWidth}px solid ${element.borderColor || '#333333'}` : 'none',
                 borderRadius: element.borderRadius ? `${element.borderRadius}px` : 0,
                 backgroundColor: element.backgroundColor || 'transparent',
                 caretColor: '#0078d7',
+                outline: 'none',
               }}
-              value={element.content}
-              onChange={(e) => handleTextChange(element.id, e.target.value)}
-              onBlur={() => {
+              dangerouslySetInnerHTML={{ __html: initialHtml }}
+              onInput={(e) => {
+                const target = e.currentTarget
+                const newHeight = Math.max(Number(element.height) || 50, target.scrollHeight)
+                target.style.height = `${newHeight}px`
+              }}
+              onBlur={(e) => {
+                const relatedTarget = e.relatedTarget
+                if (relatedTarget && (
+                  relatedTarget.closest('[data-text-toolbar]') ||
+                  relatedTarget.closest('.color-picker') ||
+                  relatedTarget.closest('.dropdown-options') ||
+                  relatedTarget.closest('.dropdown')
+                )) {
+                  return
+                }
+
+                const newHtml = e.currentTarget.innerHTML
+                const newHeight = Math.max(Number(element.height) || 50, e.currentTarget.scrollHeight)
+                updateElement(element.id, {
+                  content: newHtml,
+                  runs: null,
+                  height: newHeight
+                })
                 setEditingTextId(null)
-                commitHistory() // Commit text edit to history
+                commitHistory()
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 e.stopPropagation()
-                // Escape to finish editing
                 if (e.key === 'Escape') {
                   e.preventDefault()
+                  const newHtml = e.currentTarget.innerHTML
+                  updateElement(element.id, {
+                    content: newHtml,
+                    runs: null,
+                  })
                   setEditingTextId(null)
                   setSelectedElementId(null)
                   commitHistory()
                 }
-                // Tab to move to next element or create new one
-                if (e.key === 'Tab') {
-                  e.preventDefault()
-                  setEditingTextId(null)
-                  commitHistory()
-                }
               }}
-              autoFocus
-              placeholder={element.isPlaceholder ? element.content : 'Type here...'}
+              onKeyUp={saveSelection}
+              onMouseUp={saveSelection}
             />
           )
         }
@@ -2452,33 +2666,61 @@ const EditorPage = () => {
           <div className="relative w-full h-full">
             {shapeContent}
             {editingTextId === element.id ? (
-              <textarea
-                className="absolute inset-0 bg-transparent border-none outline-none resize-none p-2 text-center flex items-center justify-center"
+              <div
+                ref={editableDivRef}
+                contentEditable
+                suppressContentEditableWarning
+                data-text-editable="true"
+                className="absolute inset-0 bg-transparent border-none outline-none resize-none p-2 text-center flex items-center justify-center overflow-y-auto"
                 style={{
                   fontSize: `${element.fontSize}px`,
                   fontWeight: element.fontWeight,
-                  fontFamily: element.fontFamily,
-                  fontStyle: element.fontStyle,
-                  textDecoration: element.textDecoration,
-                  textAlign: element.textAlign,
+                  fontFamily: element.fontFamily || 'Inter',
+                  fontStyle: element.fontStyle || 'normal',
+                  textDecoration: element.textDecoration || 'none',
+                  textAlign: element.textAlign || 'center',
                   color: element.color,
                   caretColor: '#0078d7',
+                  outline: 'none',
                 }}
-                value={element.content || ''}
-                onChange={(e) => handleTextChange(element.id, e.target.value)}
-                onBlur={() => setEditingTextId(null)}
+                dangerouslySetInnerHTML={{ __html: element.runs && element.runs.length > 0 ? convertRunsToHtml(element.runs) : (element.content || '') }}
+                onBlur={(e) => {
+                  const relatedTarget = e.relatedTarget
+                  if (relatedTarget && (
+                    relatedTarget.closest('[data-text-toolbar]') ||
+                    relatedTarget.closest('.color-picker') ||
+                    relatedTarget.closest('.dropdown-options') ||
+                    relatedTarget.closest('.dropdown')
+                  )) {
+                    return
+                  }
+
+                  const newHtml = e.currentTarget.innerHTML
+                  updateElement(element.id, {
+                    content: newHtml,
+                    runs: null,
+                  })
+                  setEditingTextId(null)
+                  commitHistory()
+                }}
                 onPointerDown={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   e.stopPropagation()
                   if (e.key === 'Escape') {
                     e.preventDefault()
+                    const newHtml = e.currentTarget.innerHTML
+                    updateElement(element.id, {
+                      content: newHtml,
+                      runs: null,
+                    })
                     setEditingTextId(null)
                     setSelectedElementId(null)
+                    commitHistory()
                   }
                 }}
-                autoFocus
-                placeholder="Type text..."
+                onKeyUp={saveSelection}
+                onMouseUp={saveSelection}
               />
             ) : element.content ? (
               <div
@@ -2486,18 +2728,17 @@ const EditorPage = () => {
                 style={{
                   fontSize: `${element.fontSize}px`,
                   fontWeight: element.fontWeight,
-                  fontFamily: element.fontFamily,
-                  fontStyle: element.fontStyle,
-                  textDecoration: element.textDecoration,
-                  textAlign: element.textAlign,
+                  fontFamily: element.fontFamily || 'Inter',
+                  fontStyle: element.fontStyle || 'normal',
+                  textDecoration: element.textDecoration || 'none',
+                  textAlign: element.textAlign || 'center',
                   color: element.color,
                   padding: '8px',
                   overflow: 'hidden',
                   wordWrap: 'break-word',
                 }}
-              >
-                {element.content}
-              </div>
+                dangerouslySetInnerHTML={{ __html: element.content }}
+              />
             ) : null}
           </div>
         )
@@ -3840,12 +4081,33 @@ const handleAddFrame = useCallback((templateType) => {
         </div>
       </header>
 
-      {/* Text Toolbar (shown when text is selected) */}
-     {showTextToolbar && selectedElement?.type === 'text' && (
+      {/* Text Toolbar (shown when text or shape is selected) */}
+     {showTextToolbar && (selectedElement?.type === 'text' || selectedElement?.type === 'shape') && (
         <TextToolbar
-          element={selectedElement}
+          element={{ ...selectedElement, ...selectionFormatting }}
           onUpdate={(updates) => {
-            updateElement(selectedElementId, updates)
+            if (editingTextId === selectedElementId) {
+              const inlineKeys = ['fontWeight', 'fontStyle', 'textDecoration', 'color', 'fontFamily', 'fontSize']
+              const inlineUpdates = {}
+              const containerUpdates = {}
+              
+              Object.keys(updates).forEach(key => {
+                if (inlineKeys.includes(key)) {
+                  inlineUpdates[key] = updates[key]
+                } else {
+                  containerUpdates[key] = updates[key]
+                }
+              })
+              
+              if (Object.keys(inlineUpdates).length > 0) {
+                applyStyleToSelection(inlineUpdates)
+              }
+              if (Object.keys(containerUpdates).length > 0) {
+                updateElement(selectedElementId, containerUpdates)
+              }
+            } else {
+              updateElement(selectedElementId, updates)
+            }
           }}
           onAnimationChange={(animation) => {
             updateElementAnimation(selectedElementId, animation)
@@ -4826,7 +5088,8 @@ const handleAddFrame = useCallback((templateType) => {
                             left: element.x,
                             top: element.y,
                             width: element.width,
-                            height: element.height,
+                            height: (editingTextId === element.id && element.type === 'text') ? 'auto' : element.height,
+                            minHeight: (editingTextId === element.id && element.type === 'text') ? element.height : undefined,
                             ...getAnimationStyle(element),
                           }}
                         >

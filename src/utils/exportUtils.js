@@ -80,7 +80,8 @@ const exportSimplePDF = async (frames, projectTitle) => {
         pdf.setTextColor(element.color || '#000000')
         const x = ((element.x || 0) / SLIDE_WIDTH) * pageWidth
         const y = ((element.y || 0) / SLIDE_HEIGHT) * pageHeight + 30
-        String(element.content || '').split('\n').forEach((line, lineIndex) => {
+        const cleanContent = String(element.content || '').replace(/<[^>]*>/g, '')
+        cleanContent.split('\n').forEach((line, lineIndex) => {
           pdf.text(line, x, y + (lineIndex * (element.fontSize || 18) * 0.75))
         })
       })
@@ -588,7 +589,8 @@ const renderSlide = async (ctx, frame, width, height) => {
         ctx.textAlign = element.textAlign || 'center'
         ctx.textBaseline = 'middle'
 
-        const lines = element.content.split('\n')
+        const cleanContent = (element.content || '').replace(/<[^>]*>/g, '')
+        const lines = cleanContent.split('\n')
         const lineHeight = element.fontSize * scaleY * 1.2
         lines.forEach((line, index) => {
           const textX = element.textAlign === 'left' ? x : element.textAlign === 'right' ? x + w : x + w / 2
