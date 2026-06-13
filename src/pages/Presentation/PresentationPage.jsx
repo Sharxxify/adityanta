@@ -651,6 +651,10 @@ const PresentationPage = () => {
     }))
   }, [frames])
 
+  const sortedFramesByArea = useMemo(() => {
+    return [...frameMapLayout].sort((a, b) => (b.width * b.height) - (a.width * a.height))
+  }, [frameMapLayout])
+
   const worldBounds = useMemo(() => {
     if (!frameMapLayout.length) {
       return { width: 1800, height: 1100, minX: 0, minY: 0, maxX: 1800, maxY: 1100 }
@@ -1228,6 +1232,7 @@ const PresentationPage = () => {
       >
        {frameMapLayout.map((frameBox, frameIdx) => {
           const frameData = frames.find(f => f.id === frameBox.id) || frames[frameIdx];
+          const sizeRank = sortedFramesByArea.findIndex(f => f.id === frameBox.id);
           const isActive = currentSlideIndex === frameIdx;
           // Every slide stays at its layout size in the world — no resize-on-
           // active hack, so neighbours can never overlap. The Van Wijk camera
@@ -1264,7 +1269,7 @@ const PresentationPage = () => {
                 top: renderTop,
                 width: renderW,
                 height: renderH,
-                zIndex: isActive ? 10 : 1,
+                zIndex: isActive ? 1000 : (sizeRank * 10 + 1),
                 background: frameData?.backgroundImage
                   ? `url("${frameData.backgroundImage}") center/cover no-repeat`
                   : ((frameData?.backgroundColor && frameData.backgroundColor !== 'transparent')

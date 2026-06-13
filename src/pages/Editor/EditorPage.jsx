@@ -928,6 +928,10 @@ const EditorPage = () => {
     }))
   }, [frames])
 
+  const sortedFramesByArea = useMemo(() => {
+    return [...frameMapLayout].sort((a, b) => (b.width * b.height) - (a.width * a.height))
+  }, [frameMapLayout])
+
   const interFrameConnectors = useMemo(() => buildInterFrameConnectors(frameMapLayout), [frameMapLayout])
 
   const worldBounds = useMemo(() => {
@@ -5047,6 +5051,7 @@ const handleAddFrame = useCallback((templateType) => {
 
               {frameMapLayout.map((frameBox, frameIdx) => {
                 const selected = frameBox.id === activeFrameId
+                const sizeRank = sortedFramesByArea.findIndex(f => f.id === frameBox.id)
                 // Bug 1: only show selection decorations (blue border, shadow
                 // boost, resize handles) when the frame also has visual focus.
                 // `selected` stays true internally so editing logic keeps using
@@ -5076,14 +5081,13 @@ const handleAddFrame = useCallback((templateType) => {
                     style={{
                       left: frameBox.x, top: frameBox.y,
                       width: frameBox.width, height: frameBox.height,
-                      // #02 — Dragged frame gets highest z-index; selected gets 10, others 1
-                      zIndex: draggedFrameZBoost === frameBox.id ? 100 : (selected ? 10 : 1),
+                      zIndex: draggedFrameZBoost === frameBox.id ? 1000 : (sizeRank * 10 + (selected ? 5 : 0)),
                     }}
                   >
                     {/* Inner frame: clip content, handle click/drag */}
                     <div
-                      onClick={() => handleFrameSingleClick(frameBox.id)}
-                      onDoubleClick={() => handleFrameDoubleClick(frameBox.id)}
+                      onClick={(e) => { e.stopPropagation(); handleFrameSingleClick(frameBox.id); }}
+                      onDoubleClick={(e) => { e.stopPropagation(); handleFrameDoubleClick(frameBox.id); }}
                       onPointerDown={(e) => { if (!isResizingFrame) handleFrameDragStart(e, frameBox) }}
                       className="absolute inset-0"
                       style={{

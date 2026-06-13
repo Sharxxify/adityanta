@@ -296,7 +296,16 @@ export const exportToVideo = async (frames, options, onProgress, header = null) 
     ctx.globalAlpha = 1
 
     // 4. Frames (pre-rendered canvases drawn at their spatial positions)
-    for (let i = 0; i < frameMapLayout.length; i++) {
+    // Sort rendering order: largest area frames first (at the bottom), smallest area frames last (on top).
+    const sortedFrameIndices = Array.from({ length: frameMapLayout.length }, (_, idx) => idx)
+      .sort((a, b) => {
+        const boxA = frameMapLayout[a]
+        const boxB = frameMapLayout[b]
+        return (boxB.width * boxB.height) - (boxA.width * boxA.height)
+      })
+
+    for (let k = 0; k < sortedFrameIndices.length; k++) {
+      const i = sortedFrameIndices[k]
       const box = frameMapLayout[i]
       ctx.save()
 
