@@ -1672,7 +1672,10 @@ const EditorPage = () => {
 
     if (e.ctrlKey || e.metaKey) {
       // Zoom always works regardless of selection
-      const ZOOM_SENSITIVITY = 0.0015;
+      // Trackpads emit many high-frequency events with small deltaY values (usually < 40).
+      // Mouse wheels emit discrete ticks (usually >= 100).
+      const isTrackpad = Math.abs(e.deltaY) < 40;
+      const ZOOM_SENSITIVITY = isTrackpad ? 0.008 : 0.0025;
       
       let rect = null;
       let screenX = 0;
