@@ -874,6 +874,14 @@ const EditorPage = () => {
     setZoom(fitZoom)
   }, [fitZoom, setZoom])
 
+  // Debounce syncing camera.zoom to EditorContext zoom to prevent performance lag during wheel zoom
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setZoom(Math.round(camera.zoom * 100))
+    }, 150)
+    return () => clearTimeout(handler)
+  }, [camera.zoom, setZoom])
+
   // Load template or user file on mount if templateId exists
   useEffect(() => {
     // Skip if already loaded
@@ -1475,23 +1483,43 @@ const EditorPage = () => {
     if (transitionTimeoutRef.current) clearTimeout(transitionTimeoutRef.current);
     transitionTimeoutRef.current = setTimeout(() => setIsNavigating(false), 120);
 
-    setCamera(prev => {
-      if (e.ctrlKey || e.metaKey) {
-        // Zoom always works regardless of selection
-        const ZOOM_SENSITIVITY = 0.0015;
-        const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
-        let newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 15.0);
-        return { ...prev, zoom: newZoom };
-      } else {
-        // Pan — only when no element is selected
-        if (selectedElementId) return prev;
-        return {
-          ...prev,
-          panX: prev.panX - e.deltaX / prev.zoom,
-          panY: prev.panY - e.deltaY / prev.zoom,
-        };
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom always works regardless of selection
+      const ZOOM_SENSITIVITY = 0.0015;
+      
+      let rect = null;
+      let screenX = 0;
+      let screenY = 0;
+      if (canvasRef.current) {
+        rect = canvasRef.current.getBoundingClientRect();
+        screenX = e.clientX - rect.left;
+        screenY = e.clientY - rect.top;
       }
-    });
+      const originX = worldBounds.width / 2;
+      const originY = worldBounds.height / 2;
+
+      setCamera(prev => {
+        const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
+        const newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 15.0);
+        
+        if (rect) {
+          return {
+            zoom: newZoom,
+            panX: prev.panX + (screenX - originX) * (1 / newZoom - 1 / prev.zoom),
+            panY: prev.panY + (screenY - originY) * (1 / newZoom - 1 / prev.zoom)
+          };
+        }
+        return { ...prev, zoom: newZoom };
+      });
+    } else {
+      // Pan — only when no element is selected
+      if (selectedElementId) return;
+      setCamera(prev => ({
+        ...prev,
+        panX: prev.panX - e.deltaX / prev.zoom,
+        panY: prev.panY - e.deltaY / prev.zoom,
+      }));
+    }
   }
 
   useEffect(() => {
@@ -5012,7 +5040,20 @@ const handleAddFrame = useCallback((templateType) => {
                   // #04 — Smooth zoom with CSS transition
                   setIsNavigating(false) // enable CSS transition
                   const next = Math.max(0.1, camera.zoom - 0.1)
-                  setCamera(prev => ({ ...prev, zoom: next }))
+                  if (canvasRef.current) {
+                    const rect = canvasRef.current.getBoundingClientRect()
+                    const originX = worldBounds.width / 2
+                    const originY = worldBounds.height / 2
+                    const viewportCenterX = rect.width / 2
+                    const viewportCenterY = rect.height / 2
+                    setCamera(prev => ({
+                      zoom: next,
+                      panX: prev.panX + (viewportCenterX - originX) * (1 / next - 1 / prev.zoom),
+                      panY: prev.panY + (viewportCenterY - originY) * (1 / next - 1 / prev.zoom)
+                    }))
+                  } else {
+                    setCamera(prev => ({ ...prev, zoom: next }))
+                  }
                   setZoom(Math.round(next * 100))
                 }}
                 className="text-lg hover:text-gray-900 transition-all"
@@ -5034,7 +5075,20 @@ const handleAddFrame = useCallback((templateType) => {
                   // #04 — Smooth zoom with CSS transition
                   setIsNavigating(false) // enable CSS transition
                   const next = Math.min(15.0, camera.zoom + 0.1)
-                  setCamera(prev => ({ ...prev, zoom: next }))
+                  if (canvasRef.current) {
+                    const rect = canvasRef.current.getBoundingClientRect()
+                    const originX = worldBounds.width / 2
+                    const originY = worldBounds.height / 2
+                    const viewportCenterX = rect.width / 2
+                    const viewportCenterY = rect.height / 2
+                    setCamera(prev => ({
+                      zoom: next,
+                      panX: prev.panX + (viewportCenterX - originX) * (1 / next - 1 / prev.zoom),
+                      panY: prev.panY + (viewportCenterY - originY) * (1 / next - 1 / prev.zoom)
+                    }))
+                  } else {
+                    setCamera(prev => ({ ...prev, zoom: next }))
+                  }
                   setZoom(Math.round(next * 100))
                 }}
                 className="text-lg hover:text-gray-900 transition-all"
