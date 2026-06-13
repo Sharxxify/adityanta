@@ -632,6 +632,7 @@ const EditorPage = () => {
   const [rightPanelTab, setRightPanelTab] = useState('properties') // properties, design, notes
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [isFrameFocused, setIsFrameFocused] = useState(true)
+  const [editorMode, setEditorMode] = useState('overview')
  // Navigation transition duration — persisted across editor sessions
   const NAV_SPEED_KEY = 'adityanta_nav_speed_ms'
   const [navSpeedMs, setNavSpeedMs] = useState(() => {
@@ -3382,7 +3383,8 @@ const EditorPage = () => {
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
     const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
     updateCameraToBox({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
-  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, updateCameraToBox])
+    setEditorMode('overview')
+  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, updateCameraToBox, setEditorMode])
 
 const focusFrameById = useCallback((frameId) => {
     const target = frameMapLayout.find(f => f.id === frameId)
@@ -3448,9 +3450,10 @@ const focusFrameById = useCallback((frameId) => {
     const { panX, panY } = cameraForCenter(targetZoom, cx, cy)
     setCamera({ zoom: targetZoom, panX, panY })
     setZoom(Math.round(targetZoom * 100))
+    setEditorMode('overview')
     // Re-enable CSS transitions for subsequent (non-rAF) interactions.
     requestAnimationFrame(() => setIsNavigating(false))
-  }, [isTemplateLoading, frameMapLayout.length, worldBounds.minX, worldBounds.minY, worldBounds.maxX, worldBounds.maxY, fitZoomForBox, cameraForCenter, cancelCameraAnim, setZoom])
+  }, [isTemplateLoading, frameMapLayout.length, worldBounds.minX, worldBounds.minY, worldBounds.maxX, worldBounds.maxY, fitZoomForBox, cameraForCenter, cancelCameraAnim, setZoom, setEditorMode])
 
 const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     // Skip focus/zoom if user just finished dragging a frame
@@ -3472,6 +3475,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
         focusOverview()
       }
       pendingFocusModeRef.current = null
+      setEditorMode(mode)
       return
     }
 
@@ -3483,6 +3487,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       }
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
+      setEditorMode('frame')
       return
     }
 
@@ -3491,13 +3496,15 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       focusOverview()
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
+      setEditorMode('overview')
       return
     }
 
     // 'select' or other modes: no camera move, just update active frame.
     pendingFocusModeRef.current = mode
     setActiveFrameId(frameId)
-  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage])
+    setEditorMode(mode)
+  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode])
 
  // #01 — Single click selects, double-click zooms to frame
   const handleFrameSingleClick = useCallback((frameId) => {
@@ -3523,7 +3530,8 @@ const handleFrameDoubleClick = useCallback((frameId) => {
     if (target) {
       updateCameraToBox(target, 0.85)
     }
-  }, [setActiveFrameId, frameMapLayout, updateCameraToBox])
+    setEditorMode('frame')
+  }, [setActiveFrameId, frameMapLayout, updateCameraToBox, setEditorMode])
 
   // Wrap addFrame so new slide lands adjacent to the currently active frame
 const handleAddFrame = useCallback((templateType) => {
@@ -3540,7 +3548,8 @@ const handleAddFrame = useCallback((templateType) => {
     } else {
       addFrame(templateType)
     }
-  }, [addFrame, frameMapLayout, activeFrameId])
+    setEditorMode('frame')
+  }, [addFrame, frameMapLayout, activeFrameId, setEditorMode])
 
   // Find a non-overlapping adjacent slot for a duplicated frame.
   // Tries Right → Below → Left → Above (in that order). Falls back to
@@ -4516,6 +4525,7 @@ const handleAddFrame = useCallback((templateType) => {
           templateThumbnailUrl={templateThumbnailUrl}
           frameLayouts={frameMapLayout}
           editorBackground={editorBgImage}
+          editorMode={editorMode}
         />
 
         {/* Canvas Area - keep slide fully visible, centered horizontally, toolbar separated below */}

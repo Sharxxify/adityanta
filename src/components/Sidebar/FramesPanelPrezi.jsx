@@ -182,7 +182,9 @@ const FramesPanelPrezi = ({
   reorderFrames,
   frameLayouts = [],
   editorBackground = null,
+  editorMode = 'overview',
 }) => {
+  const isOverviewMode = editorMode === 'overview'
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const [dragOverIndex, setDragOverIndex] = useState(null)
@@ -204,18 +206,24 @@ const FramesPanelPrezi = ({
   const activeIndex = useMemo(() => frames.findIndex((f) => f.id === activeFrame), [frames, activeFrame])
 
   const handleDragStart = (e, index) => {
+    if (!isOverviewMode) {
+      e.preventDefault()
+      return
+    }
     dragIndexRef.current = index
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(index))
   }
 
   const handleDragOver = (e, index) => {
+    if (!isOverviewMode) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     if (index !== dragIndexRef.current) setDragOverIndex(index)
   }
 
   const handleDrop = (e, toIndex) => {
+    if (!isOverviewMode) return
     e.preventDefault()
     const fromIndex = dragIndexRef.current
     if (fromIndex !== null && fromIndex !== toIndex) {
@@ -303,13 +311,13 @@ const FramesPanelPrezi = ({
           return (
             <div
               key={frame.id}
-              draggable
+              draggable={isOverviewMode}
               onDragStart={(e) => handleDragStart(e, index)}
               onDragOver={(e) => handleDragOver(e, index)}
               onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
               onClick={() => setActiveFrame(frame.id, 'frame')}
-              className={`group cursor-grab active:cursor-grabbing rounded-xl p-2 border-2 transition-all ${
+              className={`group ${isOverviewMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} rounded-xl p-2 border-2 transition-all ${
                 isActive ? 'border-[#3dba4e] bg-green-50/50' : 'border-gray-200 hover:border-gray-300'
               } ${isDragTarget ? 'ring-2 ring-[#3dba4e] ring-offset-1 scale-[0.98]' : ''}`}
               style={isActive ? { borderWidth: '3px' } : undefined}
@@ -319,7 +327,7 @@ const FramesPanelPrezi = ({
                   <div className="mt-1 w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-bold flex items-center justify-center">
                     {slideNumber}
                   </div>
-                  <div className="text-gray-300 text-[10px] leading-none select-none">⠿</div>
+                  {isOverviewMode && <div className="text-gray-300 text-[10px] leading-none select-none">⠿</div>}
                 </div>
 
                 <div className="flex-1">
