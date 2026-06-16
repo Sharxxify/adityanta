@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from './AuthContext'
 import { API_CONFIG, AUTH_CONFIG } from '../config'
 import { fetchWithRateLimit } from '../services/api'
@@ -18,7 +18,7 @@ export const useApp = () => {
 }
 
 export const AppProvider = ({ children }) => {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const FAVORITES_KEY = 'adityanta_favorites'
   const [favorites, setFavorites] = useState(() => {
     const stored = safeGetItem(FAVORITES_KEY, [])
@@ -517,17 +517,25 @@ export const AppProvider = ({ children }) => {
   // localStorage quota (slide decks with embedded images easily exceed it).
   // localStorage is still checked once on startup as a fallback for users
   // whose old data lives there, so nothing is lost during the migration.
-  const USER_FILES_KEY = 'adityanta_user_files'
-  const TRASH_KEY = 'adityanta_trash'
-  const USER_FILES_IDB_KEY = 'adityanta_user_files'
+  // Compute unique key for the current user to namespace IndexedDB and trash storage keys
+  const userKey = useMemo(() => {
+    if (!user) return 'anonymous'
+    return String(user.id || user.user_id || user.phone || user.email || 'anonymous')
+  }, [user])
 
-// Track if initial load is complete to avoid overwriting persisted data
+  const USER_FILES_KEY = useMemo(() => `adityanta_user_files_${userKey}`, [userKey])
+  const TRASH_KEY = useMemo(() => `adityanta_trash_${userKey}`, [userKey])
+  const USER_FILES_IDB_KEY = useMemo(() => `adityanta_user_files_${userKey}`, [userKey])
+
+  // Track if initial load is complete to avoid overwriting persisted data
   // with the empty-array initial state before IndexedDB has responded.
   const initialLoadComplete = useRef(false)
 
-  // Load from IndexedDB (preferred) or localStorage (legacy) on init
+  // Load from IndexedDB (preferred) or localStorage (legacy) whenever the active account changes
   useEffect(() => {
     let cancelled = false
+    initialLoadComplete.current = false
+    setIsUserFilesLoaded(false) // Trigger loading spinner during account switches
 
     const loadUserFiles = async () => {
       // Request persistent storage so the browser does not erase our database on cache clears
@@ -549,22 +557,37 @@ export const AppProvider = ({ children }) => {
       // 2. Fallback to localStorage (legacy users from before the migration).
       //    If we find data there AND IndexedDB was empty, migrate it forward.
       if (!files) {
-        const fromLS = safeGetItem(USER_FILES_KEY, [])
+        // Try user-specific localStorage first
+        const fromLS = safeGetItem(USER_FILES_KEY, null)
         if (Array.isArray(fromLS) && fromLS.length > 0) {
           files = fromLS
           try {
             await idbSaveItem(USER_FILES_IDB_KEY, fromLS)
-            logger.info('AppContext: Migrated userFiles from localStorage to IndexedDB')
+            logger.info(`AppContext: Migrated userFiles from localStorage key ${USER_FILES_KEY} to IndexedDB`)
           } catch (e) {
             logger.error('AppContext: Migration write to IndexedDB failed:', e)
           }
         } else {
-          files = []
+          // Try global legacy localStorage key
+          const fromGlobalLS = safeGetItem('adityanta_user_files', null)
+          if (Array.isArray(fromGlobalLS) && fromGlobalLS.length > 0) {
+            files = fromGlobalLS
+            try {
+              await idbSaveItem(USER_FILES_IDB_KEY, fromGlobalLS)
+              logger.info(`AppContext: Migrated legacy global userFiles to IndexedDB key ${USER_FILES_IDB_KEY}`)
+              // Clean up global legacy localStorage so it doesn't cause mix-ups
+              localStorage.removeItem('adityanta_user_files')
+            } catch (e) {
+              logger.error('AppContext: Migration write to IndexedDB failed:', e)
+            }
+          } else {
+            files = []
+          }
         }
       }
 
       if (cancelled) return
-      logger.info('AppContext: Loaded user files:', files.length)
+      logger.info(`AppContext: Loaded user files for key ${USER_FILES_IDB_KEY}:`, files.length)
       setUserFiles(files)
 
       // CRITICAL: only flip these flags AFTER the async load has populated
@@ -591,22 +614,24 @@ export const AppProvider = ({ children }) => {
       setTrashedItems(validTrash)
       // Update localStorage with cleaned trash
       setToStorage(TRASH_KEY, validTrash)
+    } else {
+      setTrashedItems([])
     }
 
     return () => { cancelled = true }
-  }, [])
+  }, [USER_FILES_IDB_KEY, TRASH_KEY, USER_FILES_KEY])
 
   // Save to IndexedDB whenever userFiles changes (including empty array).
   // We no longer write userFiles to localStorage — IndexedDB has a much
   // larger quota (~50MB+ in most browsers, and 50%+ of free disk in Chrome).
   useEffect(() => {
-    if (initialLoadComplete.current) {
-      logger.info('AppContext: Persisting userFiles to IndexedDB:', userFiles.length, 'files')
+    if (initialLoadComplete.current && isUserFilesLoaded) {
+      logger.info(`AppContext: Persisting userFiles to IndexedDB for key ${USER_FILES_IDB_KEY}:`, userFiles.length, 'files')
       idbSaveItem(USER_FILES_IDB_KEY, userFiles).catch((e) => {
         logger.error('AppContext: IndexedDB save failed:', e)
       })
     }
-  }, [userFiles])
+  }, [userFiles, USER_FILES_IDB_KEY, isUserFilesLoaded])
 
  
 
@@ -615,7 +640,7 @@ export const AppProvider = ({ children }) => {
     if (initialLoadComplete.current) {
       setToStorage(TRASH_KEY, trashedItems)
     }
-  }, [trashedItems])
+  }, [trashedItems, TRASH_KEY])
 
   // Auto-cleanup expired trash items every minute
   useEffect(() => {
@@ -664,7 +689,7 @@ export const AppProvider = ({ children }) => {
 
     setUserFiles(nextFiles)
     return fileData
-  }, [userFiles])
+  }, [userFiles, USER_FILES_IDB_KEY])
 
   // Get project by ID
   const getProject = useCallback((projectId) => {
@@ -695,7 +720,7 @@ export const AppProvider = ({ children }) => {
         logger.error('deleteUserFile: IndexedDB write failed:', e)
       })
     }
-  }, [userFiles])
+  }, [userFiles, USER_FILES_IDB_KEY])
 
   const restoreUserFile = useCallback((fileId) => {
     const file = trashedItems.find(f => f.id === fileId)
