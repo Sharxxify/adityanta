@@ -1415,7 +1415,8 @@ const EditorPage = () => {
       // Present (F5)
       if (e.key === 'F5') {
         e.preventDefault()
-        navigate(`/present/${templateId || 'new'}`)
+        const idx = frames.findIndex(f => f.id === activeFrameId)
+        navigate(`/present/${templateId || 'new'}`, { state: { startSlide: Math.max(0, idx) } })
       }
 
       // Show shortcuts modal
@@ -1636,7 +1637,8 @@ const EditorPage = () => {
   }, [frames, templateId, templateGradient, editorBgImage, saveToUserFiles, navigate, isTemplateLoading])
 
   const handlePresent = () => {
-    navigate(`/present/${templateId || 'new'}`)
+    const idx = frames.findIndex(f => f.id === activeFrameId)
+    navigate(`/present/${templateId || 'new'}`, { state: { startSlide: Math.max(0, idx) } })
   }
 
   // Pan / Wheel State
@@ -2643,58 +2645,312 @@ const EditorPage = () => {
 
         // Shape rendering with text overlay support
         let shapeContent
-        if (element.shapeType === 'circle') {
-          shapeContent = (
-            <div
-              className="w-full h-full rounded-full"
-              style={{ backgroundColor: element.fill, border: element.strokeWidth ? `${element.strokeWidth}px solid ${element.strokeColor}` : 'none', ...shapeStyle }}
-            />
-          )
-        } else if (element.shapeType === 'triangle') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 200 150" preserveAspectRatio="none" style={shapeStyle}>
-              <polygon points="100,0 0,150 200,150" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} />
-            </svg>
-          )
-        } else if (element.shapeType === 'line') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 200 10" preserveAspectRatio="none" style={shapeStyle}>
-              <line x1="0" y1="5" x2="200" y2="5" stroke={element.fill} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" />
-            </svg>
-          )
-        } else if (element.shapeType === 'arrow') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 200 30" preserveAspectRatio="none" style={shapeStyle}>
-              <line x1="0" y1="15" x2="170" y2="15" stroke={element.fill} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" />
-              <polygon points="170,5 200,15 170,25" fill={element.fill} />
-            </svg>
-          )
-        } else if (element.shapeType === 'star') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-              <polygon points="50,5 61,35 95,35 68,57 79,91 50,70 21,91 32,57 5,35 39,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} />
-            </svg>
-          )
-        } else if (element.shapeType === 'hexagon') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 120 100" preserveAspectRatio="none" style={shapeStyle}>
-              <polygon points="30,0 90,0 120,50 90,100 30,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} />
-            </svg>
-          )
-        } else if (element.shapeType === 'diamond') {
-          shapeContent = (
-            <svg className="w-full h-full" viewBox="0 0 100 140" preserveAspectRatio="none" style={shapeStyle}>
-              <polygon points="50,0 100,70 50,140 0,70" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} />
-            </svg>
-          )
-        } else {
-          // Default rectangle
-          shapeContent = (
-            <div
-              className="w-full h-full rounded"
-              style={{ backgroundColor: element.fill, border: element.strokeWidth ? `${element.strokeWidth}px solid ${element.strokeColor}` : 'none', ...shapeStyle }}
-            />
-          )
+        const type = element.shapeType || 'rectangle'
+        switch(type) {
+          case 'circle':
+            shapeContent = (
+              <div
+                className="w-full h-full rounded-full"
+                style={{ backgroundColor: element.fill, border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none', ...shapeStyle }}
+              />
+            )
+            break
+          case 'semicircle':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 0 100 A 50 50 0 0 1 100 100 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'triangle':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 200 150" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="100,0 0,150 200,150" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'rightTriangle':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,0 0,100 100,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'parallelogram':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="25,0 100,0 75,100 0,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'diamond':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,0 100,50 50,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'pentagon':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 95,38 78,92 22,92 5,38" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'hexagon':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 120 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="30,0 90,0 120,50 90,100 30,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'octagon':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="30,5 70,5 95,30 95,70 70,95 30,95 5,70 5,30" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'cylinder':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 20 L 10 80 A 40 10 0 0 0 90 80 L 90 20 A 40 10 0 0 0 10 20 M 10 20 A 40 10 0 0 0 90 20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'chevronProcess':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,0 75,0 100,50 75,100 0,100 25,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'shield':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 10 L 90 10 L 90 50 Q 90 85 50 95 Q 10 85 10 50 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'waveFlag':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 20 Q 30 10 50 20 T 90 20 L 90 80 Q 70 70 50 80 T 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'folder':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 20 L 40 20 L 50 30 L 90 30 L 90 80 L 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'stickyNote':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 10 L 90 10 L 90 70 L 70 90 L 10 90 Z M 90 70 L 70 70 L 70 90" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'document':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 15 10 L 70 10 L 85 25 L 85 90 L 15 90 Z M 70 10 L 70 25 L 85 25" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'puzzle':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 20 20 L 40 20 C 40 10, 60 10, 60 20 L 80 20 L 80 40 C 90 40, 90 60, 80 60 L 80 80 L 60 80 C 60 90, 40 90, 40 80 L 20 80 L 20 60 C 10 60, 10 40, 20 40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'leftArrowBlock':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,50 40,15 40,35 100,35 100,65 40,65 40,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'rightArrowBlock':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="100,50 60,15 60,35 0,35 0,65 60,65 60,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'leftRightArrowBlock':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,50 25,25 25,40 75,40 75,25 100,50 75,75 75,60 25,60 25,75" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'chevronArrowBlock':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,25 50,25 50,10 90,50 50,90 50,75 0,75 40,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'pentagonArrowBlock':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="0,35 60,35 60,15 100,50 60,85 60,65 0,65" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'crescent':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 80 15 A 35 35 0 1 0 80 85 A 30 30 0 1 1 80 15" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'star4':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,10 60,40 90,50 60,60 50,90 40,60 10,50 40,40" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'star':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 61,35 95,35 68,57 79,91 50,70 21,91 32,57 5,35 39,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'star6':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 63,28 90,28 72,50 90,72 63,72 50,95 37,72 10,72 28,50 10,28 37,28" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'star8':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 58,35 82,18 65,42 95,50 65,58 82,82 58,65 50,95 42,65 18,82 35,58 5,50 35,42 18,18 42,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'sun':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 53,23 68,14 64,31 81,19 72,36 89,30 76,46 95,50 76,54 89,70 72,64 81,81 64,69 68,86 53,77 50,95 47,77 32,86 36,69 19,81 28,64 11,70 24,54 5,50 24,46 11,30 28,36 19,19 36,31 32,14 47,23" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'teardrop':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 50 10 C 50 10 90 55 90 70 A 40 40 0 0 1 10 70 C 10 55 50 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'ovalSpeech':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 50 10 C 25 10 5 25 5 45 C 5 60 18 73 35 77 L 25 95 L 48 80 C 49 80 50 80 50 80 C 75 80 95 65 95 45 C 95 25 75 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'rectSpeech':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 10 10 L 90 10 L 90 70 L 45 70 L 25 90 L 25 70 L 10 70 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'thoughtBubble':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 30 60 A 15 15 0 0 1 38 35 A 18 18 0 0 1 70 35 A 15 15 0 0 1 78 60 A 12 12 0 0 1 70 75 L 35 75 A 12 12 0 0 1 30 60 Z M 22 83 A 5 5 0 1 1 17 83 A 5 5 0 1 1 22 83 Z M 13 91 A 3 3 0 1 1 10 91 A 3 3 0 1 1 13 91 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'cloud':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 25 60 A 15 15 0 0 1 35 35 A 20 20 0 0 1 70 35 A 15 15 0 0 1 80 60 A 12 12 0 0 1 75 80 L 25 80 A 12 12 0 0 1 25 60 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'heart':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 50 30 C 50 10, 10 10, 10 40 C 10 65, 50 90, 50 95 C 50 90, 90 65, 90 40 C 90 10, 50 10, 50 30 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'cross':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="35,5 65,5 65,35 95,35 95,65 65,65 65,95 35,95 35,65 5,65 5,35 35,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'flower':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 50,40 C 53,30 63,30 66,40 C 76,37 79,47 70,53 C 79,59 71,69 61,66 C 60,76 50,76 47,66 C 37,69 29,59 38,53 C 29,47 32,37 42,40 C 40,30 50,30 50,40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'decagram':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <polygon points="50,5 57,20 72,12 70,28 85,25 78,39 92,45 81,54 88,70 75,72 77,88 63,83 59,95 48,87 37,95 33,83 19,88 21,72 8,70 15,54 4,45 18,39 11,25 26,28 24,12 39,20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'roundedFlower':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 50,20 L 53,20 L 55,10 L 61,12 L 59,21 L 64,23 L 69,16 L 74,20 L 69,27 L 73,31 L 80,27 L 83,32 L 76,37 L 78,42 L 86,42 L 86,48 L 77,50 L 77,55 L 85,58 L 83,63 L 75,61 L 72,66 L 77,73 L 73,77 L 66,72 L 62,75 L 63,84 L 57,85 L 55,76 L 50,77 L 48,86 L 42,85 L 44,76 L 39,74 L 33,80 L 29,75 L 34,69 L 31,64 L 23,67 L 21,62 L 28,57 L 27,52 L 18,50 L 18,44 L 27,42 L 28,37 L 20,34 L 22,29 L 30,32 L 33,27 L 28,20 L 33,16 L 38,23 L 43,21 L 43,12 L 49,11 Z M 50,35 A 15,15 0 1 0 50,65 A 15,15 0 1 0 50,35 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'line':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 200 10" preserveAspectRatio="none" style={shapeStyle}>
+                <line x1="0" y1="5" x2="200" y2="5" stroke={element.fill || element.strokeColor} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'arrow':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 200 30" preserveAspectRatio="none" style={shapeStyle}>
+                <line x1="0" y1="15" x2="170" y2="15" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+                <polygon points="170,5 200,15 170,25" fill={element.strokeColor || element.fill} />
+              </svg>
+            )
+            break
+          case 'doubleArrow':
+            shapeContent = (
+              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
+                <path d="M 12 50 L 88 50 M 28 30 L 8 50 L 28 70 M 72 30 L 92 50 L 72 70" fill="none" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 3} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
+              </svg>
+            )
+            break
+          case 'square':
+          case 'rectangle':
+          default:
+            shapeContent = (
+              <div
+                className="w-full h-full"
+                style={{
+                  backgroundColor: element.fill,
+                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
+                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' ? '4px' : '0px'),
+                  ...shapeStyle
+                }}
+              />
+            )
+            break
         }
 
         // Wrap shape with text overlay
@@ -3918,7 +4174,7 @@ const handleAddFrame = useCallback((templateType) => {
           <div className="flex items-center group relative">
             <input
               type="text"
-              value={projectTitle || 'Untitled presentation'}
+              value={projectTitle ?? ''}
               onChange={(e) => setProjectTitle(e.target.value)}
               className="text-base font-semibold text-gray-800 bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-primary/20 rounded px-1 py-1 min-w-[170px]"
               placeholder="Untitled presentation"
@@ -4168,282 +4424,174 @@ const handleAddFrame = useCallback((templateType) => {
         />
       )}
 
-      {/* Shape Options Dropdown */}
       {showShapeOptions && (
-        <div className="dropdown-options absolute top-24 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-xl shadow-lg p-4 z-30 max-w-4xl max-h-[600px] overflow-y-auto">
-          <p className="text-sm font-semibold text-gray-900 mb-3">Add Shape (50+ Options)</p>
-          <div className="grid grid-cols-8 gap-3">
-            <button
-              onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <div className="w-10 h-8 bg-green-500 rounded" />
-              <span className="text-xs text-gray-600">Rectangle</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <div className="w-10 h-10 bg-blue-500 rounded-full" />
-              <span className="text-xs text-gray-600">Circle</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,4 2,20 22,20" fill="#FF5722" /></svg>
-              <span className="text-xs text-gray-600">Triangle</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="8" viewBox="0 0 24 8"><line x1="0" y1="4" x2="24" y2="4" stroke="#333" strokeWidth="3" /></svg>
-              <span className="text-xs text-gray-600">Line</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="12" viewBox="0 0 24 12"><line x1="0" y1="6" x2="18" y2="6" stroke="#333" strokeWidth="2" /><polygon points="18,2 24,6 18,10" fill="#333" /></svg>
-              <span className="text-xs text-gray-600">Arrow</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9" fill="#FFD700" /></svg>
-              <span className="text-xs text-gray-600">Star</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="6,2 18,2 24,12 18,22 6,22 0,12" fill="#9C27B0" /></svg>
-              <span className="text-xs text-gray-600">Hexagon</span>
-            </button>
-            <button
-              onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }}
-              className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all"
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 22,12 12,22 2,12" fill="#00BCD4" /></svg>
-              <span className="text-xs text-gray-600">Diamond</span>
-            </button>
-            {/* Additional 42 shapes */}
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-8 bg-red-500 rounded" />
-              <span className="text-xs text-gray-600">Red Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-10 bg-purple-500 rounded-full" />
-              <span className="text-xs text-gray-600">Purple Circle</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-6 bg-yellow-500 rounded-full" />
-              <span className="text-xs text-gray-600">Oval</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,4 2,20 22,20" fill="#4CAF50" /></svg>
-              <span className="text-xs text-gray-600">Green Triangle</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-8 bg-orange-500 rounded-lg" />
-              <span className="text-xs text-gray-600">Rounded Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-10 bg-teal-500 rounded-full" />
-              <span className="text-xs text-gray-600">Teal Circle</span>
-            </button>
-            <button onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="8" viewBox="0 0 24 8"><line x1="0" y1="4" x2="24" y2="4" stroke="#E91E63" strokeWidth="3" /></svg>
-              <span className="text-xs text-gray-600">Pink Line</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="12" viewBox="0 0 24 12"><line x1="0" y1="6" x2="18" y2="6" stroke="#2196F3" strokeWidth="2" /><polygon points="18,2 24,6 18,10" fill="#2196F3" /></svg>
-              <span className="text-xs text-gray-600">Blue Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-8 bg-indigo-500" />
-              <span className="text-xs text-gray-600">Square</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-12 bg-cyan-500 rounded" />
-              <span className="text-xs text-gray-600">Tall Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-10 bg-lime-500 rounded-full" />
-              <span className="text-xs text-gray-600">Lime Circle</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,4 2,20 22,20" fill="#9C27B0" /></svg>
-              <span className="text-xs text-gray-600">Purple Triangle</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9" fill="#F44336" /></svg>
-              <span className="text-xs text-gray-600">Red Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="6,2 18,2 24,12 18,22 6,22 0,12" fill="#3F51B5" /></svg>
-              <span className="text-xs text-gray-600">Blue Hexagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,2 22,12 12,22 2,12" fill="#FF9800" /></svg>
-              <span className="text-xs text-gray-600">Orange Diamond</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-10 h-2 bg-gray-700" />
-              <span className="text-xs text-gray-600">Thin Bar</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <div className="w-6 h-6 bg-pink-500 rounded-full" />
-              <span className="text-xs text-gray-600">Small Circle</span>
-            </button>
-            {/* More varied shapes using SVG for proper rendering */}
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="24" viewBox="0 0 32 24"><rect x="1" y="1" width="30" height="22" fill="none" stroke="#3B82F6" strokeWidth="2" rx="2" /></svg>
-              <span className="text-xs text-gray-600">Blue Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="#10B981" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Green Circle</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="24" viewBox="0 0 28 24"><polygon points="14,2 26,22 2,22" fill="none" stroke="#EF4444" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Red Triangle</span>
-            </button>
-            <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="28" viewBox="0 0 24 28"><polygon points="12,2 22,14 12,26 2,14" fill="none" stroke="#8B5CF6" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Purple Diamond</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,2 17,10 26,10 19,16 21,25 14,20 7,25 9,16 2,10 11,10" fill="none" stroke="#F59E0B" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Yellow Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,2 25,8 25,20 14,26 3,20 3,8" fill="none" stroke="#06B6D4" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Cyan Hexagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="16" viewBox="0 0 32 16"><line x1="2" y1="8" x2="24" y2="8" stroke="#374151" strokeWidth="2" /><polygon points="24,4 30,8 24,12" fill="#374151" /></svg>
-              <span className="text-xs text-gray-600">Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="8" viewBox="0 0 32 8"><line x1="2" y1="4" x2="30" y2="4" stroke="#EC4899" strokeWidth="3" /></svg>
-              <span className="text-xs text-gray-600">Pink Line</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" fill="none" stroke="#1F2937" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Square</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="20" viewBox="0 0 32 20"><ellipse cx="16" cy="10" rx="14" ry="8" fill="none" stroke="#7C3AED" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Oval</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="24" viewBox="0 0 28 24"><polygon points="2,22 26,22 14,2" fill="none" stroke="#F97316" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Inverted Tri</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,4 16,11 24,11 18,15 20,23 14,19 8,23 10,15 4,11 12,11" fill="none" stroke="#DC2626" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Red Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="26" viewBox="0 0 28 26"><polygon points="7,2 21,2 27,13 21,24 7,24 1,13" fill="none" stroke="#4F46E5" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Wide Hexagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="12,1 23,12 12,23 1,12" fill="none" stroke="#0EA5E9" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Diamond</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="18" viewBox="0 0 32 18"><rect x="1" y="1" width="30" height="16" rx="8" fill="none" stroke="#059669" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Capsule</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,1 17,9 26,9 19,15 22,24 14,19 6,24 9,15 2,9 11,9" fill="none" stroke="#BE185D" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Pink Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="16" height="32" viewBox="0 0 16 32"><line x1="8" y1="28" x2="8" y2="6" stroke="#374151" strokeWidth="2" /><polygon points="4,6 8,1 12,6" fill="#374151" /></svg>
-              <span className="text-xs text-gray-600">Up Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="16" height="32" viewBox="0 0 16 32"><line x1="8" y1="4" x2="8" y2="26" stroke="#374151" strokeWidth="2" /><polygon points="4,26 8,31 12,26" fill="#374151" /></svg>
-              <span className="text-xs text-gray-600">Down Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="16" viewBox="0 0 32 16"><line x1="28" y1="8" x2="6" y2="8" stroke="#374151" strokeWidth="2" /><polygon points="6,4 1,8 6,12" fill="#374151" /></svg>
-              <span className="text-xs text-gray-600">Left Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="20" viewBox="0 0 32 20"><rect x="1" y="1" width="30" height="18" rx="3" fill="none" stroke="#6366F1" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Rounded Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="24" viewBox="0 0 24 24"><polygon points="2,12 22,2 22,22" fill="none" stroke="#0D9488" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Right Triangle</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="24" viewBox="0 0 28 24"><polygon points="6,2 22,2 26,12 22,22 6,22 2,12" fill="none" stroke="#7C3AED" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Octagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,2 16,12 26,14 16,16 14,26 12,16 2,14 12,12" fill="none" stroke="#F59E0B" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">4-Point Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="24" viewBox="0 0 28 24"><polygon points="14,2 26,10 22,22 6,22 2,10" fill="none" stroke="#8B5CF6" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Pentagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><line x1="4" y1="24" x2="24" y2="4" stroke="#EF4444" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Diagonal Line</span>
-            </button>
-            <button onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><line x1="4" y1="4" x2="24" y2="24" stroke="#10B981" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Diagonal Line 2</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="#3B82F6" strokeWidth="2" strokeDasharray="4 2" /></svg>
-              <span className="text-xs text-gray-600">Dashed Circle</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="22" viewBox="0 0 28 22"><rect x="2" y="2" width="24" height="18" fill="none" stroke="#1F2937" strokeWidth="2" strokeDasharray="4 2" /></svg>
-              <span className="text-xs text-gray-600">Dashed Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,1 16.5,8 24,8 18,13 20,21 14,17 8,21 10,13 4,8 11.5,8" fill="none" stroke="#4ADE80" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Green Star</span>
-            </button>
-            <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="24" viewBox="0 0 28 24"><polygon points="14,22 2,4 26,4" fill="none" stroke="#6366F1" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Flip Triangle</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="14,2 26,7 26,21 14,26 2,21 2,7" fill="none" stroke="#F472B6" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Tall Hexagon</span>
-            </button>
-            <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="20" viewBox="0 0 32 20"><polygon points="16,2 30,10 16,18 2,10" fill="none" stroke="#0EA5E9" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Wide Diamond</span>
-            </button>
-            <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="24" height="32" viewBox="0 0 24 32"><rect x="2" y="2" width="20" height="28" fill="none" stroke="#DC2626" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Tall Rect</span>
-            </button>
-            <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="18" viewBox="0 0 28 18"><ellipse cx="14" cy="9" rx="12" ry="7" fill="none" stroke="#0D9488" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Flat Oval</span>
-            </button>
-            <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="32" height="20" viewBox="0 0 32 20"><polygon points="1,10 12,2 12,7 20,7 20,2 31,10 20,18 20,13 12,13 12,18" fill="none" stroke="#374151" strokeWidth="2" /></svg>
-              <span className="text-xs text-gray-600">Double Arrow</span>
-            </button>
-            <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-gray-50 transition-all">
-              <svg width="28" height="28" viewBox="0 0 28 28"><polygon points="5,5 23,5 23,23 5,23" fill="none" stroke="#7C3AED" strokeWidth="2" transform="rotate(45 14 14)" /></svg>
-              <span className="text-xs text-gray-600">Rotated Square</span>
-            </button>
+        <div className="dropdown-options absolute top-24 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-xl shadow-lg p-5 z-30 w-[420px] max-h-[500px] overflow-y-auto">
+          <p className="text-sm font-semibold text-gray-900 mb-4">Add Shape (40+ Options)</p>
+          
+          {/* Basic Category */}
+          <div className="mb-4">
+            <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Basic</h4>
+            <div className="grid grid-cols-7 gap-2">
+              <button onClick={() => { addShapeElement('square'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Square">
+                <svg width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" fill="#4B5563" rx="1" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Rectangle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" fill="#4B5563" rx="1" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Circle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('semicircle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Semicircle">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 10 90 A 40 40 0 0 1 90 90 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('triangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Triangle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="12,3 2,21 22,21" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('rightTriangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Right Triangle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="3,3 3,21 21,21" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('parallelogram'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Parallelogram">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="7,4 22,4 17,20 2,20" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('diamond'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Diamond">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="12,2 22,12 12,22 2,12" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('pentagon'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Pentagon">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="12,2 22,9 18,21 6,21 2,9" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('hexagon'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Hexagon">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="6,2 18,2 24,12 18,22 6,22 0,12" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('octagon'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Octagon">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="7,2 17,2 22,7 22,17 17,22 7,22 2,17 2,7" fill="#4B5563" /></svg>
+              </button>
+            </div>
           </div>
+
+          {/* Diagrams Category */}
+          <div className="mb-4">
+            <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Diagrams</h4>
+            <div className="grid grid-cols-7 gap-2">
+              <button onClick={() => { addShapeElement('cylinder'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Cylinder">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 20 30 L 20 70 A 30 10 0 0 0 80 70 L 80 30 A 30 10 0 0 0 20 30 M 20 30 A 30 10 0 0 0 80 30" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('chevronProcess'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Chevron Process">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="10,20 70,20 90,50 70,80 10,80 30,50" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('shield'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Shield">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 20 20 L 80 20 L 80 50 Q 80 80 50 90 Q 20 80 20 50 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('waveFlag'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Wave Flag">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 15 25 Q 32 15 50 25 T 85 25 L 85 75 Q 67 65 50 75 T 15 75 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('folder'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Folder">
+                <svg width="20" height="20" viewBox="0 0 24 24"><path d="M 10 4 L 4 4 C 2.9 4 2.01 4.9 2.01 6 L 2 18 C 2 19.1 2.9 20 4 20 L 20 20 C 21.1 20 22 19.1 22 18 L 22 8 C 22 6.9 21.1 6 20 6 L 12 6 L 10 4 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('stickyNote'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Sticky Note">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 20 20 L 80 20 L 80 65 L 65 80 L 20 80 Z M 80 65 L 65 65 L 65 80" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('document'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Document">
+                <svg width="20" height="20" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('puzzle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Puzzle">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 25 25 L 42 25 C 42 18, 58 18, 58 25 L 75 25 L 75 42 C 82 42, 82 58, 75 58 L 75 75 L 58 75 C 58 82, 42 82, 42 75 L 25 75 L 25 58 C 18 58, 18 42, 25 42 Z" fill="#4B5563" /></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Arrows Category */}
+          <div className="mb-4">
+            <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Arrows</h4>
+            <div className="grid grid-cols-7 gap-2">
+              <button onClick={() => { addShapeElement('leftArrowBlock'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Left Block Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="10,50 45,20 45,38 90,38 90,62 45,62 45,80" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('rightArrowBlock'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Right Block Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="90,50 55,20 55,38 10,38 10,62 55,62 55,80" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('leftRightArrowBlock'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Left Right Block Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="10,50 35,25 35,40 65,40 65,25 90,50 65,75 65,60 35,60 35,75" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('chevronArrowBlock'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Chevron Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="10,30 50,30 50,15 85,50 50,85 50,70 10,70 40,50" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('pentagonArrowBlock'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Pentagon Block Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="10,38 60,38 60,20 90,50 60,80 60,62 10,62" fill="#4B5563" /></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Accents Category */}
+          <div className="mb-4">
+            <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Accents</h4>
+            <div className="grid grid-cols-7 gap-2">
+              <button onClick={() => { addShapeElement('crescent'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Crescent Moon">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 75 20 A 30 30 0 1 0 75 80 A 25 25 0 1 1 75 20" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('star4'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="4-Point Star">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="50,15 60,40 85,50 60,60 50,85 40,60 15,50 40,40" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('star'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="5-Point Star">
+                <svg width="20" height="20" viewBox="0 0 24 24"><polygon points="12,2 15,9 22,9 16,14 18,21 12,17 6,21 8,14 2,9 9,9" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('star6'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="6-Point Star">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="50,10 60,30 85,30 70,50 80,70 50,60 20,70 30,50 15,30 40,30" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('star8'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="8-Point Star">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="50,10 56,33 78,22 65,42 88,50 65,58 78,78 56,67 50,90 44,67 22,78 35,58 12,50 35,42 22,22 44,33" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('sun'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Sun">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="50,10 53,25 65,18 62,31 75,22 68,36 80,31 71,44 85,47 71,50 80,63 68,58 75,72 62,63 65,76 53,69 50,84 47,69 35,76 38,63 25,72 32,58 20,63 29,50 15,47 29,44 20,31 32,36 25,22 38,31 35,18 47,25" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('teardrop'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Teardrop">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 50 15 C 50 15 85 55 85 70 A 35 35 0 0 1 15 70 C 15 55 50 15 50 15 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('ovalSpeech'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Oval Speech Bubble">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 50 15 C 27 15 10 28 10 45 C 10 58 22 69 37 73 L 28 89 L 48 76 C 49 76 50 76 50 76 C 73 76 90 63 90 45 C 90 28 73 15 50 15 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('rectSpeech'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Rectangular Speech Bubble">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 15 15 L 85 15 L 85 65 L 45 65 L 28 82 L 28 65 L 15 65 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('thoughtBubble'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Thought Bubble">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 32 55 A 12 12 0 0 1 39 34 A 15 15 0 0 1 66 34 A 12 12 0 0 1 73 55 A 10 10 0 0 1 66 67 L 37 67 A 10 10 0 0 1 32 55 Z M 25 73 A 4 4 0 1 1 21 73 Z M 17 80 A 2 2 0 1 1 15 80 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('cloud'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Cloud">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 25 60 A 15 15 0 0 1 35 35 A 20 20 0 0 1 70 35 A 15 15 0 0 1 80 60 A 12 12 0 0 1 75 80 L 25 80 A 12 12 0 0 1 25 60 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('heart'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Heart">
+                <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('cross'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Plus/Cross">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="35,15 65,15 65,35 85,35 85,65 65,65 65,85 35,85 35,65 15,65 15,35 35,35" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('flower'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Flower/Burst">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 50,40 C 53,30 63,30 66,40 C 76,37 79,47 70,53 C 79,59 71,69 61,66 C 60,76 50,76 47,66 C 37,69 29,59 38,53 C 29,47 32,37 42,40 C 40,30 50,30 50,40 Z" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('decagram'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Badge Star">
+                <svg width="20" height="20" viewBox="0 0 100 100"><polygon points="50,10 56,23 69,16 67,30 80,27 74,40 86,45 76,53 82,67 70,69 72,83 59,78 55,89 45,82 35,89 31,78 18,83 20,69 8,67 14,53 4,45 16,40 10,27 23,30 21,16 34,23" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('roundedFlower'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Gear">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 50,20 L 53,20 L 55,10 L 61,12 L 59,21 L 64,23 L 69,16 L 74,20 L 69,27 L 73,31 L 80,27 L 83,32 L 76,37 L 78,42 L 86,42 L 86,48 L 77,50 L 77,55 L 85,58 L 83,63 L 75,61 L 72,66 L 77,73 L 73,77 L 66,72 L 62,75 L 63,84 L 57,85 L 55,76 L 50,77 L 48,86 L 42,85 L 44,76 L 39,74 L 33,80 L 29,75 L 34,69 L 31,64 L 23,67 L 21,62 L 28,57 L 27,52 L 18,50 L 18,44 L 27,42 L 28,37 L 20,34 L 22,29 L 30,32 L 33,27 L 28,20 L 33,16 L 38,23 L 43,21 L 43,12 L 49,11 Z M 50,35 A 15,15 0 1 0 50,65 A 15,15 0 1 0 50,35 Z" fill="#4B5563" /></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Draw Lines Category */}
+          <div>
+            <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Draw Lines</h4>
+            <div className="grid grid-cols-7 gap-2">
+              <button onClick={() => { addShapeElement('line'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Line">
+                <svg width="20" height="20" viewBox="0 0 24 8"><line x1="0" y1="4" x2="24" y2="4" stroke="#4B5563" strokeWidth="3" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('arrow'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Arrow">
+                <svg width="20" height="20" viewBox="0 0 24 12"><line x1="0" y1="6" x2="18" y2="6" stroke="#4B5563" strokeWidth="2" /><polygon points="18,2 24,6 18,10" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('doubleArrow'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Double Arrow">
+                <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 15 50 L 85 50 M 30 30 L 10 50 L 30 70 M 70 30 L 90 50 L 70 70" fill="none" stroke="#4B5563" strokeWidth="8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </div>
+          </div>
+
         </div>
       )}
 

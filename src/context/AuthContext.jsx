@@ -27,22 +27,9 @@ export const AuthProvider = ({ children }) => {
   const isProfileComplete = useCallback((profile) => {
     if (!profile) return false
     const name = (profile.name || '').trim()
-    const gender = (profile.gender || '').trim()
-    const address = (profile.address || '').trim()
-    const city = (profile.city || '').trim()
-    const state = (profile.state || '').trim()
-    const pincode = (profile.pincode || '').trim()
-    
-    // For Google users, check authProvider explicitly (not just email presence)
-    const isGoogleUser = profile.authProvider === 'google'
-    if (isGoogleUser) {
-      const email = (profile.email || '').trim()
-      return Boolean(name && email && gender && address && city && state && pincode)
-    }
-    
-    // For phone users, phone is required
+    const email = (profile.email || '').trim()
     const phone = (profile.phone || '').trim()
-    return Boolean(name && phone && gender && address && city && state && pincode)
+    return Boolean(name && (email || phone))
   }, [])
 
   useEffect(() => {

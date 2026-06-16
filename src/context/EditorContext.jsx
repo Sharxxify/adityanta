@@ -943,16 +943,60 @@ const createBlankProject = () => ({
     })
   }, [addElement])
 
-  const addShapeElement = useCallback((shapeType) => {
+  const addShapeElement = useCallback((shapeType, customStyle = {}) => {
     const shapeStyles = {
+      // Basic
+      square: { width: 150, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
       rectangle: { width: 200, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
       circle: { width: 150, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#2196F3' },
+      semicircle: { width: 150, height: 100, fill: 'transparent', strokeWidth: 2, strokeColor: '#4CAF50' },
       triangle: { width: 200, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#FF5722' },
+      rightTriangle: { width: 200, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#FF9800' },
+      parallelogram: { width: 200, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#E91E63' },
+      diamond: { width: 150, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#00BCD4' },
+      pentagon: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#8B5CF6' },
+      hexagon: { width: 120, height: 100, fill: 'transparent', strokeWidth: 2, strokeColor: '#9C27B0' },
+      octagon: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#7C3AED' },
+
+      // Diagrams
+      cylinder: { width: 120, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#607D8B' },
+      chevronProcess: { width: 200, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#3F51B5' },
+      shield: { width: 120, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#4CAF50' },
+      waveFlag: { width: 180, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFC107' },
+      folder: { width: 150, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FF9800' },
+      stickyNote: { width: 150, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFEB3B' },
+      document: { width: 130, height: 160, fill: 'transparent', strokeWidth: 2, strokeColor: '#9E9E9E' },
+      puzzle: { width: 140, height: 140, fill: 'transparent', strokeWidth: 2, strokeColor: '#E91E63' },
+
+      // Arrows
+      leftArrowBlock: { width: 180, height: 100, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+      rightArrowBlock: { width: 180, height: 100, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+      leftRightArrowBlock: { width: 200, height: 100, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+      chevronArrowBlock: { width: 150, height: 100, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+      pentagonArrowBlock: { width: 180, height: 100, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+
+      // Accents
+      crescent: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#795548' },
+      star4: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFD700' },
+      star: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFD700' },
+      star6: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFD700' },
+      star8: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFD700' },
+      sun: { width: 130, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#FF5722' },
+      teardrop: { width: 120, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#00BCD4' },
+      ovalSpeech: { width: 180, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#4CAF50' },
+      rectSpeech: { width: 180, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#4CAF50' },
+      thoughtBubble: { width: 180, height: 140, fill: 'transparent', strokeWidth: 2, strokeColor: '#03A9F4' },
+      cloud: { width: 150, height: 100, fill: 'transparent', strokeWidth: 2, strokeColor: '#3B82F6' },
+      heart: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#EF4444' },
+      cross: { width: 120, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#F44336' },
+      flower: { width: 130, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#E91E63' },
+      decagram: { width: 130, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#9C27B0' },
+      roundedFlower: { width: 130, height: 130, fill: 'transparent', strokeWidth: 2, strokeColor: '#9E9E9E' },
+
+      // Draw Lines
       line: { width: 200, height: 4, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
       arrow: { width: 200, height: 30, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
-      star: { width: 100, height: 100, fill: 'transparent', strokeWidth: 2, strokeColor: '#FFD700' },
-      hexagon: { width: 120, height: 100, fill: 'transparent', strokeWidth: 2, strokeColor: '#9C27B0' },
-      diamond: { width: 100, height: 140, fill: 'transparent', strokeWidth: 2, strokeColor: '#00BCD4' },
+      doubleArrow: { width: 200, height: 40, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
     }
     const style = shapeStyles[shapeType] || shapeStyles.rectangle
 
@@ -974,7 +1018,8 @@ const createBlankProject = () => ({
       textDecoration: 'none',
       textAlign: 'center',
       color: '#333333',
-      ...style
+      ...style,
+      ...customStyle
     })
   }, [addElement])
 

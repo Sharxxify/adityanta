@@ -27,21 +27,10 @@ export default function LoginPage() {
     if (profile.profile_complete === false || profile.profileComplete === false) return false;
 
     // Fallback to field-based completeness check
-    const hasName = Boolean((profile.name || '').trim());
-    const hasGender = Boolean((profile.gender || '').trim());
-    const hasAddress = Boolean((profile.address || '').trim());
-    const hasCity = Boolean((profile.city || '').trim());
-    const hasState = Boolean((profile.state || '').trim());
-    const hasPincode = Boolean((profile.pincode || '').trim());
-    const isGoogleUser = profile.authProvider === 'google';
-
-    if (isGoogleUser) {
-      const hasEmail = Boolean((profile.email || '').trim());
-      return hasName && hasEmail && hasGender && hasAddress && hasCity && hasState && hasPincode;
-    }
-
-    const hasPhone = Boolean((profile.phone || '').trim());
-    return hasName && hasPhone && hasGender && hasAddress && hasCity && hasState && hasPincode;
+    const name = (profile.name || '').trim();
+    const email = (profile.email || '').trim();
+    const phone = (profile.phone || '').trim();
+    return Boolean(name && (email || phone));
   };
 
   const location = useLocation();
