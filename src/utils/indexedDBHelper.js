@@ -190,3 +190,30 @@ export const isIndexedDBAvailable = () => {
     return false
   }
 }
+
+/**
+ * Request persistent storage from the browser to prevent auto-deletion of IndexedDB
+ * @returns {Promise<boolean>} - True if persistent storage is granted
+ */
+export const requestPersistentStorage = async () => {
+  if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+    try {
+      const isPersisted = await navigator.storage.persisted()
+      if (isPersisted) {
+        logger.info('IndexedDB storage is already persistent.')
+        return true
+      }
+      const granted = await navigator.storage.persist()
+      if (granted) {
+        logger.info('IndexedDB persistent storage has been granted.')
+      } else {
+        logger.warn('IndexedDB persistent storage request was denied by the browser.')
+      }
+      return granted
+    } catch (e) {
+      logger.error('Failed to request persistent storage:', e)
+      return false
+    }
+  }
+  return false
+}

@@ -4,7 +4,7 @@ import { API_CONFIG, AUTH_CONFIG } from '../config'
 import { fetchWithRateLimit } from '../services/api'
 import { safeJSONParse, setToStorage } from '../utils/imageUtils'
 import { safeSetItem, safeGetItem } from '../utils/safeStorage'
-import { saveItem as idbSaveItem, loadItem as idbLoadItem } from '../utils/indexedDBHelper'
+import { saveItem as idbSaveItem, loadItem as idbLoadItem, requestPersistentStorage } from '../utils/indexedDBHelper'
 import logger from '../utils/logger'
 
 const AppContext = createContext(null)
@@ -530,6 +530,13 @@ export const AppProvider = ({ children }) => {
     let cancelled = false
 
     const loadUserFiles = async () => {
+      // Request persistent storage so the browser does not erase our database on cache clears
+      try {
+        await requestPersistentStorage()
+      } catch (e) {
+        logger.error('AppContext: Persistent storage request failed:', e)
+      }
+
       // 1. Try IndexedDB first — this is the authoritative store going forward.
       let files = null
       try {
