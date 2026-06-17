@@ -10,7 +10,7 @@ const getHtml2Canvas = async () => {
   return html2canvasPromise
 }
 
-const renderFrameToCanvas = async (frame, { width = SLIDE_WIDTH, height = SLIDE_HEIGHT, scale = 2 } = {}) => {
+const renderFrameToCanvas = async (frame, { width = SLIDE_WIDTH, height = SLIDE_HEIGHT, scale = 2, header = null, editorBackground = null } = {}) => {
   const html2canvas = await getHtml2Canvas()
   const wrapper = document.createElement('div')
   wrapper.style.position = 'fixed'
@@ -19,7 +19,7 @@ const renderFrameToCanvas = async (frame, { width = SLIDE_WIDTH, height = SLIDE_
   wrapper.style.pointerEvents = 'none'
   wrapper.style.zIndex = '-1'
 
-  const root = buildSlideRenderNode(frame, { width, height })
+  const root = buildSlideRenderNode(frame, { width, height, header, editorBackground })
   wrapper.appendChild(root)
   document.body.appendChild(wrapper)
 
@@ -40,13 +40,13 @@ const renderFrameToCanvas = async (frame, { width = SLIDE_WIDTH, height = SLIDE_
 }
 
 // Convert frames to PDF using html2canvas and jsPDF
-export const exportToPDF = async (frames, projectTitle, header = null) => {
+export const exportToPDF = async (frames, projectTitle, header = null, editorBackground = null) => {
   try {
     const { jsPDF } = await import('jspdf')
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [SLIDE_WIDTH, SLIDE_HEIGHT] })
 
     for (let i = 0; i < frames.length; i++) {
-      const canvas = await renderFrameToCanvas(frames[i], { width: SLIDE_WIDTH, height: SLIDE_HEIGHT, scale: 2, header })
+      const canvas = await renderFrameToCanvas(frames[i], { width: SLIDE_WIDTH, height: SLIDE_HEIGHT, scale: 2, header, editorBackground })
       if (i > 0) pdf.addPage([SLIDE_WIDTH, SLIDE_HEIGHT], 'landscape')
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)
     }
@@ -96,7 +96,7 @@ const exportSimplePDF = async (frames, projectTitle) => {
 }
 
 // Export to PPTX using rendered slide images to preserve layout fidelity
-export const exportToPPTX = async (frames, projectTitle, header = null) => {
+export const exportToPPTX = async (frames, projectTitle, header = null, editorBackground = null) => {
   try {
     const PptxGenJS = (await import('pptxgenjs')).default
     const pptx = new PptxGenJS()
@@ -108,7 +108,7 @@ export const exportToPPTX = async (frames, projectTitle, header = null) => {
 
     for (const frame of frames) {
       const slide = pptx.addSlide()
-      const canvas = await renderFrameToCanvas(frame, { width: 1920, height: 1080, scale: 1, header })
+      const canvas = await renderFrameToCanvas(frame, { width: 1920, height: 1080, scale: 1, header, editorBackground })
       slide.addImage({ data: canvas.toDataURL('image/png'), x: 0, y: 0, w: 10, h: 5.625 })
       if (frame.notes) slide.addNotes(frame.notes)
     }

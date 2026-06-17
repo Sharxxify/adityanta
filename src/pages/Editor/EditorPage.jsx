@@ -3896,6 +3896,26 @@ const EditorPage = () => {
 
     cameraAnimRef.current.raf = requestAnimationFrame(tick)
   }, [camera.zoom, camera.panX, camera.panY, worldBounds.width, worldBounds.height, getViewportSize, cameraForCenter, setZoom, cancelCameraAnim])
+  // Prezi-style smooth zoom: van Wijk single-curve animation.
+  // Replaces the old "pull back and dive" two-stage approach with a
+  // mathematically smooth path through (pan, log-zoom) space. Feels
+  // continuous, no perceptible stage break, constant on-screen speed.
+  const animateToFrameTwoStage = useCallback((targetBox, zoomScale = 0.85) => {
+    // Target world-space center and the world-width we want to show.
+    const targetCenterX = targetBox.x + targetBox.width / 2
+    const targetCenterY = targetBox.y + targetBox.height / 2
+
+    // What "width of world" do we want to show on screen at the target?
+    // = box dimension scaled up by 1/zoomScale so there's a little padding.
+    const { w: vpW, h: vpH } = getViewportSize()
+    const targetW = Math.max(
+      targetBox.width / zoomScale,
+      (targetBox.height / zoomScale) * (vpW / vpH)
+    )
+
+    animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
+  }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
+
   const updateCameraToBox = useCallback((box, zoomScale = 0.8) => {
     if (!canvasRef.current || !box) return
     cancelCameraAnim()
@@ -3927,26 +3947,6 @@ const EditorPage = () => {
     setZoom(Math.round(targetZoom * 100))
   }, [worldBounds.height, worldBounds.width, setZoom, cancelCameraAnim])
 
-// Prezi-style smooth zoom: van Wijk single-curve animation.
-  // Replaces the old "pull back and dive" two-stage approach with a
-  // mathematically smooth path through (pan, log-zoom) space. Feels
-  // continuous, no perceptible stage break, constant on-screen speed.
-  const animateToFrameTwoStage = useCallback((targetBox, zoomScale = 0.85) => {
-    // Target world-space center and the world-width we want to show.
-    const targetCenterX = targetBox.x + targetBox.width / 2
-    const targetCenterY = targetBox.y + targetBox.height / 2
-
-    // What "width of world" do we want to show on screen at the target?
-    // = box dimension scaled up by 1/zoomScale so there's a little padding.
-    const { w: vpW, h: vpH } = getViewportSize()
-    const targetW = Math.max(
-      targetBox.width / zoomScale,
-      (targetBox.height / zoomScale) * (vpW / vpH)
-    )
-
-    animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
-  }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
-
   const focusOverview = useCallback(() => {
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
     const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
@@ -3954,7 +3954,7 @@ const EditorPage = () => {
     setEditorMode('overview')
   }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, animateToFrameTwoStage, setEditorMode])
 
-  const focusFrameById = useCallback((frameId) => {
+const focusFrameById = useCallback((frameId) => {
     const target = frameMapLayout.find(f => f.id === frameId)
     if (target) updateCameraToBox(target, 0.96)
   }, [frameMapLayout, updateCameraToBox])
@@ -4018,9 +4018,11 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
         // Re-clicking the active frame: just snap-zoom in single-stage. There's
         // nothing to "fly between", so the two-stage arc would feel weird.
         if (target) updateCameraToBox(target, 0.85)
+        setIsFrameFocused(true)
       } else if (mode === 'overview') {
         // Overview from any state stays single-stage (Q7).
         focusOverview()
+        setIsFrameFocused(false)
       }
       pendingFocusModeRef.current = null
       setEditorMode(mode)
@@ -4036,6 +4038,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
       setEditorMode('frame')
+      setIsFrameFocused(true)
       return
     }
 
@@ -4045,6 +4048,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
       setEditorMode('overview')
+      setIsFrameFocused(false)
       return
     }
 
@@ -4052,7 +4056,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     pendingFocusModeRef.current = mode
     setActiveFrameId(frameId)
     setEditorMode(mode)
-  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode])
+  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode, setIsFrameFocused])
 
  // #01 — Single click selects, double-click zooms to frame
   const handleFrameSingleClick = useCallback((frameId) => {
@@ -5270,7 +5274,9 @@ const handleAddFrame = useCallback((templateType) => {
                         opacity: 1,
                         background: frameData?.backgroundImage
                           ? `url("${frameData.backgroundImage}") center/cover no-repeat`
-                          : (frameData?.backgroundColor && frameData.backgroundColor !== 'transparent' ? frameData.backgroundColor : 'white'),
+                          : (frameData?.backgroundColor && frameData.backgroundColor !== 'transparent'
+                              ? frameData.backgroundColor
+                              : (editorBgImage ? 'transparent' : '#ffffff')),
                         boxShadow: selectedVisual ? '0 14px 40px rgba(15, 23, 42, 0.18)' : '0 8px 24px rgba(15, 23, 42, 0.12)',
                         overflow: 'hidden',
                         transition: 'border 0.15s, box-shadow 0.15s',
