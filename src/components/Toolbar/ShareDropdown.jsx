@@ -10,7 +10,7 @@ import logger from '../../utils/logger'
 import { encodeSharePayload } from '../../utils/shareUtils'
 
 const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
-  const { frames, projectTitle, exportProject } = useEditor()
+  const { frames, projectTitle, exportProject, editorBackground, header } = useEditor()
   const { user, refreshUser } = useAuth()
   const toast = useToast()
   const [exporting, setExporting] = useState(null)
@@ -256,10 +256,10 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
 
      switch (format) {
         case 'pdf':
-          success = await exportToPDF(frames, projectTitle)
+          success = await exportToPDF(frames, projectTitle, header, editorBackground)
           break
         case 'pptx':
-          success = await exportToPPTX(frames, projectTitle)
+          success = await exportToPPTX(frames, projectTitle, header, editorBackground)
           break
         case 'mp4':
           success = await exportToMP4Universal(frames, projectTitle, {

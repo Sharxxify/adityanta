@@ -91,10 +91,10 @@ const easeCubicBezier = (() => {
 const lerp = (a, b, t) => a + (b - a) * t
 
 // ─── Pre-render a single slide to an offscreen canvas ──────────────────────
-const prerenderFrame = async (frame, header = null) => {
+const prerenderFrame = async (frame, header = null, editorBackground = null) => {
   const wrapper = document.createElement('div')
   wrapper.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none;z-index:-1;'
-  const root = buildSlideRenderNode(frame, { width: SLIDE_WIDTH, height: SLIDE_HEIGHT, header })
+  const root = buildSlideRenderNode(frame, { width: SLIDE_WIDTH, height: SLIDE_HEIGHT, header, editorBackground })
   wrapper.appendChild(root)
   document.body.appendChild(wrapper)
   try {
@@ -159,7 +159,7 @@ export const exportToVideo = async (frames, options, onProgress, header = null) 
   const frameCanvases = []
   for (let i = 0; i < frames.length; i++) {
     onProgress?.(i, frames.length, `Pre-rendering slide ${i + 1} of ${frames.length}…`)
-    frameCanvases.push(await prerenderFrame(frames[i]))
+    frameCanvases.push(await prerenderFrame(frames[i], header, editorBackground))
   }
   onProgress?.(frames.length, frames.length, 'Starting recording…')
 
