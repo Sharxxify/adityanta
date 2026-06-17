@@ -99,8 +99,12 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
   const isUnderline = element?.textDecoration === 'underline'
   const textColor = element?.color || '#1a1a1a'
   const alignment = element?.textAlign || 'left'
-  const borderWidth = element?.borderWidth || 0
-  const borderColor = element?.borderColor || '#333333'
+  const borderWidth = element?.type === 'shape'
+    ? (element?.strokeWidth !== undefined ? element.strokeWidth : 0)
+    : (element?.borderWidth || 0)
+  const borderColor = element?.type === 'shape'
+    ? (element?.strokeColor || '#333333')
+    : (element?.borderColor || '#333333')
   const listType = element?.listType || 'none'
   const currentAnimation = element?.animation?.type || 'none'
   const currentDuration = element?.animation?.duration || 500
@@ -683,7 +687,13 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
                 {[0, 1, 2, 3, 4].map((width) => (
                   <button
                     key={width}
-                    onClick={() => onUpdate({ borderWidth: width })}
+                    onClick={() => {
+                      if (element?.type === 'shape') {
+                        onUpdate({ strokeWidth: width, borderWidth: width })
+                      } else {
+                        onUpdate({ borderWidth: width })
+                      }
+                    }}
                     className={`w-8 h-8 flex items-center justify-center rounded border ${borderWidth === width ? 'border-primary bg-primary/10' : 'border-gray-200 hover:border-gray-300'
                       }`}
                   >
@@ -706,7 +716,14 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
                 <input
                   type="color"
                   value={borderColor}
-                  onChange={(e) => onUpdate({ borderColor: e.target.value })}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (element?.type === 'shape') {
+                      onUpdate({ strokeColor: val, borderColor: val })
+                    } else {
+                      onUpdate({ borderColor: val })
+                    }
+                  }}
                   className="w-8 h-8 cursor-pointer border border-gray-200 rounded"
                 />
                 <span className="text-xs text-gray-600">{borderColor}</span>

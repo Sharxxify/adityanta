@@ -144,7 +144,6 @@ export default function ProfileSetupPage() {
     const newErrors = {}
 
     if (!formData.fullName.trim()) newErrors.fullName = 'Full name is required'
-    if (!formData.gender) newErrors.gender = 'Please select gender'
     
     // Email is required for Google users, optional for phone users
     if (isGoogleUser && !formData.email.trim()) {
@@ -152,14 +151,11 @@ export default function ProfileSetupPage() {
     } else if (formData.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
       newErrors.email = 'Please enter a valid email'
     }
-    
-    if (!formData.address.trim()) newErrors.address = 'Address is required'
-    if (!formData.city.trim()) newErrors.city = 'City is required'
-    if (!formData.state) newErrors.state = 'Please select state'
-    if (!formData.pincode.trim()) {
-      newErrors.pincode = 'Pincode is required'
-    } else if (!/^\d{6}$/.test(formData.pincode)) {
-      newErrors.pincode = 'Please enter valid 6-digit pincode'
+
+    if (!isGoogleUser && !formData.phone.trim()) {
+      newErrors.phone = 'Phone number is required'
+    } else if (formData.phone.trim() && !/^[6-9]\d{9}$/.test(formData.phone)) {
+      newErrors.phone = 'Please enter a valid 10-digit phone number'
     }
 
     setErrors(newErrors)
@@ -178,19 +174,14 @@ export default function ProfileSetupPage() {
     try {
       const profileData = {
         name: formData.fullName,
-        gender: formData.gender,
-        city: formData.city,
-        state: formData.state,
-        address: formData.address,
-        pincode: formData.pincode
       }
 
-      if (formData.title) profileData.title = formData.title
       if (formData.email.trim()) profileData.email = formData.email.trim()
 
-      // Include phone for Google users if they entered one
-      if (isGoogleUser && formData.phone.trim()) {
-        profileData.phone = '+91' + formData.phone.trim()
+      if (formData.phone.trim()) {
+        profileData.phone = formData.phone.trim().startsWith('+91')
+          ? formData.phone.trim()
+          : '+91' + formData.phone.trim()
       }
 
       // Upload profile picture to S3 if a new image was selected
@@ -271,7 +262,7 @@ export default function ProfileSetupPage() {
           {/* Header Section with Editable Cover */}
           {(() => {
             // Check if all required details are filled
-            const hasRequiredDetails = user?.name && user?.gender && user?.address && user?.city && user?.state && user?.pincode
+            const hasRequiredDetails = user?.name && (user?.email || user?.phone)
             // Check if photos are uploaded
             const hasProfilePhoto = user?.profilePhoto || user?.picture
             const hasCoverPhoto = user?.coverPhoto || coverImagePreview
@@ -404,75 +395,20 @@ export default function ProfileSetupPage() {
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="px-4 sm:px-6 pb-8 space-y-5">
-            {/* Title & Full Name Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Title
-                </label>
-                <select
-                  name="title"
-                  value={formData.title}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2.5 rounded-lg border ${errors.title ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
-                >
-                  <option value="">Select</option>
-                  {TITLES.map(t => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="col-span-3">
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Full Name <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="fullName"
-                  value={formData.fullName}
-                  onChange={handleInputChange}
-                  placeholder="Enter your full name"
-                  className={`w-full px-3 py-2.5 rounded-lg border ${errors.fullName ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
-                />
-                {errors.fullName && <p className="mt-1 text-xs text-red-500">{errors.fullName}</p>}
-              </div>
-            </div>
-
-            {/* Gender */}
+            {/* Full Name */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Gender <span className="text-red-500">*</span>
+                Full Name <span className="text-red-500">*</span>
               </label>
-              <div className="flex flex-wrap gap-3">
-                {GENDERS.map(g => (
-                  <label
-                    key={g}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-all ${
-                      formData.gender === g
-                        ? 'border-[#006633] bg-[#006633]/5 text-[#006633]'
-                        : 'border-gray-300 hover:border-gray-400'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="gender"
-                      value={g}
-                      checked={formData.gender === g}
-                      onChange={handleInputChange}
-                      className="sr-only"
-                    />
-                    <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      formData.gender === g ? 'border-[#006633]' : 'border-gray-400'
-                    }`}>
-                      {formData.gender === g && (
-                        <span className="w-2 h-2 rounded-full bg-[#006633]" />
-                      )}
-                    </span>
-                    <span className="text-sm capitalize">{g}</span>
-                  </label>
-                ))}
-              </div>
-              {errors.gender && <p className="mt-1 text-xs text-red-500">{errors.gender}</p>}
+              <input
+                type="text"
+                name="fullName"
+                value={formData.fullName}
+                onChange={handleInputChange}
+                placeholder="Enter your full name"
+                className={`w-full px-3 py-2.5 rounded-lg border ${errors.fullName ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
+              />
+              {errors.fullName && <p className="mt-1 text-xs text-red-500">{errors.fullName}</p>}
             </div>
 
             {/* Phone & Email Row */}
@@ -526,75 +462,6 @@ export default function ProfileSetupPage() {
                 />
                 {errors.email && <p className="mt-1 text-xs text-red-500">{errors.email}</p>}
                 {isGoogleUser && user?.email && <p className="mt-1 text-xs text-gray-400">Email from Google account</p>}
-              </div>
-            </div>
-
-            {/* Address */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Address <span className="text-red-500">*</span>
-              </label>
-              <textarea
-                name="address"
-                value={formData.address}
-                onChange={handleInputChange}
-                placeholder="Enter your address"
-                rows={2}
-                className={`w-full px-3 py-2.5 rounded-lg border ${errors.address ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm resize-none`}
-              />
-              {errors.address && <p className="mt-1 text-xs text-red-500">{errors.address}</p>}
-            </div>
-
-            {/* City, State, Pincode Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  City <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="city"
-                  value={formData.city}
-                  onChange={handleInputChange}
-                  placeholder="City"
-                  className={`w-full px-3 py-2.5 rounded-lg border ${errors.city ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
-                />
-                {errors.city && <p className="mt-1 text-xs text-red-500">{errors.city}</p>}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  State <span className="text-red-500">*</span>
-                </label>
-                <select
-                  name="state"
-                  value={formData.state}
-                  onChange={handleInputChange}
-                  className={`w-full px-3 py-2.5 rounded-lg border ${errors.state ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
-                >
-                  <option value="">Select State</option>
-                  {INDIAN_STATES.map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-                {errors.state && <p className="mt-1 text-xs text-red-500">{errors.state}</p>}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Pincode <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="pincode"
-                  value={formData.pincode}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, '').slice(0, 6)
-                    setFormData(prev => ({ ...prev, pincode: val }))
-                  }}
-                  placeholder="6-digit"
-                  maxLength={6}
-                  className={`w-full px-3 py-2.5 rounded-lg border ${errors.pincode ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus:outline-none focus:ring-2 focus:ring-[#8CB9A3] text-sm`}
-                />
-                {errors.pincode && <p className="mt-1 text-xs text-red-500">{errors.pincode}</p>}
               </div>
             </div>
 

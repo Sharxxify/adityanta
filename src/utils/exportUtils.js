@@ -599,23 +599,348 @@ const renderSlide = async (ctx, frame, width, height) => {
         })
         break
 
-      case 'shape':
-        ctx.fillStyle = element.fill || '#4CAF50'
-        if (element.shapeType === 'circle') {
+      case 'shape': {
+        const fill = element.fill || 'transparent'
+        const stroke = element.strokeColor || '#333333'
+        const strokeWidth = element.strokeWidth || 0
+        const isDashed = element.borderStyle === 'dashed'
+
+        ctx.save()
+        ctx.fillStyle = fill
+        ctx.strokeStyle = stroke
+        ctx.lineWidth = strokeWidth
+        if (isDashed) {
+          ctx.setLineDash([5, 5])
+        }
+
+        const type = element.shapeType || 'rectangle'
+        if (type === 'circle') {
           ctx.beginPath()
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-          ctx.fill()
-        } else if (element.shapeType === 'triangle') {
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'rectangle') {
           ctx.beginPath()
-          ctx.moveTo(x + w / 2, y)
-          ctx.lineTo(x, y + h)
-          ctx.lineTo(x + w, y + h)
+          const radius = element.borderRadius || 0
+          if (radius > 0) {
+            ctx.roundRect(x, y, w, h, radius)
+          } else {
+            ctx.rect(x, y, w, h)
+          }
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'line') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.04, y + h / 2)
+          ctx.lineTo(x + w * 0.96, y + h / 2)
+          ctx.strokeStyle = element.fill || stroke
+          ctx.lineWidth = strokeWidth || 2
+          ctx.stroke()
+        } else if (type === 'arrow') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.04, y + h / 2)
+          ctx.lineTo(x + w * 0.78, y + h / 2)
+          ctx.strokeStyle = element.fill || stroke
+          ctx.lineWidth = strokeWidth || 2
+          ctx.stroke()
+          // Arrow head
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.78, y + h * 0.2)
+          ctx.lineTo(x + w * 0.96, y + h / 2)
+          ctx.lineTo(x + w * 0.78, y + h * 0.8)
           ctx.closePath()
+          ctx.fillStyle = element.fill || stroke
           ctx.fill()
+        } else if (type === 'doubleArrow') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.12, y + h / 2)
+          ctx.lineTo(x + w * 0.88, y + h / 2)
+          ctx.strokeStyle = element.strokeColor || element.fill || stroke
+          ctx.lineWidth = strokeWidth || 2
+          ctx.stroke()
+          // Left head
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.28, y + h * 0.2)
+          ctx.lineTo(x + w * 0.08, y + h / 2)
+          ctx.lineTo(x + w * 0.28, y + h * 0.8)
+          ctx.closePath()
+          ctx.fillStyle = element.strokeColor || element.fill || stroke
+          ctx.fill()
+          // Right head
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.72, y + h * 0.2)
+          ctx.lineTo(x + w * 0.92, y + h / 2)
+          ctx.lineTo(x + w * 0.72, y + h * 0.8)
+          ctx.closePath()
+          ctx.fillStyle = element.strokeColor || element.fill || stroke
+          ctx.fill()
+        } else if (type === 'heart') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.5, y + h * 0.3)
+          ctx.bezierCurveTo(x + w * 0.5, y + h * 0.1, x + w * 0.1, y + h * 0.1, x + w * 0.1, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.1, y + h * 0.65, x + w * 0.5, y + h * 0.9, x + w * 0.5, y + h * 0.95)
+          ctx.bezierCurveTo(x + w * 0.5, y + h * 0.9, x + w * 0.9, y + h * 0.65, x + w * 0.9, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.9, y + h * 0.1, x + w * 0.5, y + h * 0.1, x + w * 0.5, y + h * 0.3)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'cloud') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.25, y + h * 0.6)
+          ctx.bezierCurveTo(x + w * 0.1, y + h * 0.45, x + w * 0.2, y + h * 0.2, x + w * 0.35, y + h * 0.35)
+          ctx.bezierCurveTo(x + w * 0.45, y + h * 0.15, x + w * 0.65, y + h * 0.15, x + w * 0.7, y + h * 0.35)
+          ctx.bezierCurveTo(x + w * 0.85, y + h * 0.35, x + w * 0.9, y + h * 0.55, x + w * 0.8, y + h * 0.6)
+          ctx.bezierCurveTo(x + w * 0.85, y + h * 0.75, x + w * 0.7, y + h * 0.8, x + w * 0.65, y + h * 0.8)
+          ctx.lineTo(x + w * 0.25, y + h * 0.8)
+          ctx.bezierCurveTo(x + w * 0.15, y + h * 0.8, x + w * 0.15, y + h * 0.65, x + w * 0.25, y + h * 0.6)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'semicircle') {
+          ctx.beginPath()
+          ctx.ellipse(x + w / 2, y + h, w / 2, h, 0, Math.PI, 0, false)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'cylinder') {
+          ctx.beginPath()
+          ctx.ellipse(x + w / 2, y + h * 0.2, w * 0.4, h * 0.1, 0, 0, Math.PI * 2)
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.2)
+          ctx.lineTo(x + w * 0.1, y + h * 0.8)
+          ctx.ellipse(x + w / 2, y + h * 0.8, w * 0.4, h * 0.1, 0, Math.PI, 0, true)
+          ctx.lineTo(x + w * 0.9, y + h * 0.2)
+          ctx.ellipse(x + w / 2, y + h * 0.2, w * 0.4, h * 0.1, 0, 0, Math.PI, true)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'shield') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.5)
+          ctx.quadraticCurveTo(x + w * 0.9, y + h * 0.85, x + w * 0.5, y + h * 0.95)
+          ctx.quadraticCurveTo(x + w * 0.1, y + h * 0.85, x + w * 0.1, y + h * 0.5)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'waveFlag') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.2)
+          ctx.quadraticCurveTo(x + w * 0.3, y + h * 0.1, x + w * 0.5, y + h * 0.2)
+          ctx.quadraticCurveTo(x + w * 0.7, y + h * 0.3, x + w * 0.9, y + h * 0.2)
+          ctx.lineTo(x + w * 0.9, y + h * 0.8)
+          ctx.quadraticCurveTo(x + w * 0.7, y + h * 0.7, x + w * 0.5, y + h * 0.8)
+          ctx.quadraticCurveTo(x + w * 0.3, y + h * 0.9, x + w * 0.1, y + h * 0.8)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'folder') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.2)
+          ctx.lineTo(x + w * 0.4, y + h * 0.2)
+          ctx.lineTo(x + w * 0.5, y + h * 0.3)
+          ctx.lineTo(x + w * 0.9, y + h * 0.3)
+          ctx.lineTo(x + w * 0.9, y + h * 0.8)
+          ctx.lineTo(x + w * 0.1, y + h * 0.8)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'stickyNote') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.7)
+          ctx.lineTo(x + w * 0.7, y + h * 0.9)
+          ctx.lineTo(x + w * 0.1, y + h * 0.9)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.9, y + h * 0.7)
+          ctx.lineTo(x + w * 0.7, y + h * 0.7)
+          ctx.lineTo(x + w * 0.7, y + h * 0.9)
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'document') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.15, y + h * 0.1)
+          ctx.lineTo(x + w * 0.7, y + h * 0.1)
+          ctx.lineTo(x + w * 0.85, y + h * 0.25)
+          ctx.lineTo(x + w * 0.85, y + h * 0.9)
+          ctx.lineTo(x + w * 0.15, y + h * 0.9)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.7, y + h * 0.1)
+          ctx.lineTo(x + w * 0.7, y + h * 0.25)
+          ctx.lineTo(x + w * 0.85, y + h * 0.25)
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'puzzle') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.2, y + h * 0.2)
+          ctx.lineTo(x + w * 0.4, y + h * 0.2)
+          ctx.bezierCurveTo(x + w * 0.4, y + h * 0.1, x + w * 0.6, y + h * 0.1, x + w * 0.6, y + h * 0.2)
+          ctx.lineTo(x + w * 0.8, y + h * 0.2)
+          ctx.lineTo(x + w * 0.8, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.9, y + h * 0.4, x + w * 0.9, y + h * 0.6, x + w * 0.8, y + h * 0.6)
+          ctx.lineTo(x + w * 0.8, y + h * 0.8)
+          ctx.lineTo(x + w * 0.6, y + h * 0.8)
+          ctx.bezierCurveTo(x + w * 0.6, y + h * 0.9, x + w * 0.4, y + h * 0.9, x + w * 0.4, y + h * 0.8)
+          ctx.lineTo(x + w * 0.2, y + h * 0.8)
+          ctx.lineTo(x + w * 0.2, y + h * 0.6)
+          ctx.bezierCurveTo(x + w * 0.1, y + h * 0.6, x + w * 0.1, y + h * 0.4, x + w * 0.2, y + h * 0.4)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'crescent') {
+          ctx.beginPath()
+          ctx.ellipse(x + w * 0.45, y + h / 2, w * 0.35, h * 0.35, 0, -Math.PI * 0.4, Math.PI * 1.4, false)
+          ctx.ellipse(x + w * 0.5, y + h / 2, w * 0.3, h * 0.3, 0, Math.PI * 1.4, -Math.PI * 0.4, true)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'teardrop') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.5, y + h * 0.1)
+          ctx.bezierCurveTo(x + w * 0.9, y + h * 0.55, x + w * 0.9, y + h * 0.7, x + w * 0.5, y + h * 0.9)
+          ctx.bezierCurveTo(x + w * 0.1, y + h * 0.7, x + w * 0.1, y + h * 0.55, x + w * 0.5, y + h * 0.1)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'ovalSpeech') {
+          ctx.beginPath()
+          ctx.ellipse(x + w / 2, y + h * 0.45, w * 0.45, h * 0.35, 0, 0, Math.PI * 2)
+          ctx.moveTo(x + w * 0.35, y + h * 0.77)
+          ctx.lineTo(x + w * 0.25, y + h * 0.95)
+          ctx.lineTo(x + w * 0.48, y + h * 0.8)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'rectSpeech') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.1, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.1)
+          ctx.lineTo(x + w * 0.9, y + h * 0.7)
+          ctx.lineTo(x + w * 0.45, y + h * 0.7)
+          ctx.lineTo(x + w * 0.25, y + h * 0.9)
+          ctx.lineTo(x + w * 0.25, y + h * 0.7)
+          ctx.lineTo(x + w * 0.1, y + h * 0.7)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'thoughtBubble') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.3, y + h * 0.6)
+          ctx.bezierCurveTo(x + w * 0.1, y + h * 0.45, x + w * 0.2, y + h * 0.2, x + w * 0.35, y + h * 0.35)
+          ctx.bezierCurveTo(x + w * 0.45, y + h * 0.15, x + w * 0.65, y + h * 0.15, x + w * 0.7, y + h * 0.35)
+          ctx.bezierCurveTo(x + w * 0.85, y + h * 0.35, x + w * 0.9, y + h * 0.55, x + w * 0.8, y + h * 0.6)
+          ctx.bezierCurveTo(x + w * 0.85, y + h * 0.75, x + w * 0.7, y + h * 0.8, x + w * 0.65, y + h * 0.8)
+          ctx.lineTo(x + w * 0.35, y + h * 0.8)
+          ctx.bezierCurveTo(x + w * 0.25, y + h * 0.8, x + w * 0.25, y + h * 0.65, x + w * 0.3, y + h * 0.6)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(x + w * 0.22, y + h * 0.83, w * 0.05, 0, Math.PI * 2)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(x + w * 0.13, y + h * 0.91, w * 0.03, 0, Math.PI * 2)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'flower') {
+          ctx.beginPath()
+          ctx.moveTo(x + w * 0.5, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.53, y + h * 0.3, x + w * 0.63, y + h * 0.3, x + w * 0.66, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.76, y + h * 0.37, x + w * 0.79, y + h * 0.47, x + w * 0.7, y + h * 0.53)
+          ctx.bezierCurveTo(x + w * 0.79, y + h * 0.59, x + w * 0.71, y + h * 0.69, x + w * 0.61, y + h * 0.66)
+          ctx.bezierCurveTo(x + w * 0.6, y + h * 0.76, x + w * 0.5, y + h * 0.76, x + w * 0.47, y + h * 0.66)
+          ctx.bezierCurveTo(x + w * 0.37, y + h * 0.69, x + w * 0.29, y + h * 0.59, x + w * 0.38, y + h * 0.53)
+          ctx.bezierCurveTo(x + w * 0.29, y + h * 0.47, x + w * 0.32, y + h * 0.37, x + w * 0.42, y + h * 0.4)
+          ctx.bezierCurveTo(x + w * 0.4, y + h * 0.3, x + w * 0.5, y + h * 0.3, x + w * 0.5, y + h * 0.4)
+          ctx.closePath()
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'roundedFlower') {
+          ctx.beginPath()
+          const gearPts = [
+            [50,20], [53,20], [55,10], [61,12], [59,21], [64,23], [69,16], [74,20], [69,27], [73,31], [80,27], [83,32], [76,37], [78,42], [86,42], [86,48], [77,50], [77,55], [85,58], [83,63], [75,61], [72,66], [77,73], [73,77], [66,72], [62,75], [63,84], [57,85], [55,76], [50,77], [48,86], [42,85], [44,76], [39,74], [33,80], [29,75], [34,69], [31,64], [23,67], [21,62], [28,57], [27,52], [18,50], [18,44], [27,42], [28,37], [20,34], [22,29], [30,32], [33,27], [28,20], [33,16], [38,23], [43,21], [43,12], [49,11]
+          ]
+          ctx.moveTo(x + w * (gearPts[0][0]/100), y + h * (gearPts[0][1]/100))
+          for(let i=1; i<gearPts.length; i++) {
+            ctx.lineTo(x + w * (gearPts[i][0]/100), y + h * (gearPts[i][1]/100))
+          }
+          ctx.closePath()
+          ctx.moveTo(x + w * 0.65, y + h * 0.5)
+          ctx.arc(x + w * 0.5, y + h * 0.5, w * 0.15, 0, Math.PI * 2, true)
+          if (fill !== 'transparent') ctx.fill('evenodd')
+          if (strokeWidth > 0) ctx.stroke()
         } else {
-          ctx.fillRect(x, y, w, h)
+          // Polygon shapes: triangle, star, hexagon, diamond, pentagon, octagon, etc.
+          let pts = []
+          if (type === 'triangle') {
+            pts = [[0.5, 0.04], [0.04, 0.96], [0.96, 0.96]]
+          } else if (type === 'rightTriangle') {
+            pts = [[0, 0], [0, 1], [1, 1]]
+          } else if (type === 'parallelogram') {
+            pts = [[0.25, 0], [1, 0], [0.75, 1], [0, 1]]
+          } else if (type === 'star') {
+            pts = [[0.5, 0.04], [0.61, 0.37], [0.96, 0.37], [0.67, 0.58], [0.78, 0.94], [0.5, 0.72], [0.22, 0.94], [0.33, 0.58], [0.04, 0.37], [0.39, 0.37]]
+          } else if (type === 'star4') {
+            pts = [[0.5, 0.1], [0.6, 0.4], [0.9, 0.5], [0.6, 0.6], [0.5, 0.9], [0.4, 0.6], [0.1, 0.5], [0.4, 0.4]]
+          } else if (type === 'star6') {
+            pts = [[0.5, 0.05], [0.63, 0.28], [0.9, 0.28], [0.72, 0.5], [0.9, 0.72], [0.63, 0.72], [0.5, 0.95], [0.37, 0.72], [0.1, 0.72], [0.28, 0.5], [0.1, 0.28], [0.37, 0.28]]
+          } else if (type === 'star8') {
+            pts = [[0.5, 0.05], [0.58, 0.35], [0.82, 0.18], [0.65, 0.42], [0.95, 0.5], [0.65, 0.58], [0.82, 0.82], [0.58, 0.65], [0.5, 0.95], [0.42, 0.65], [0.18, 0.82], [0.35, 0.58], [0.05, 0.5], [0.35, 0.42], [0.18, 0.18], [0.42, 0.35]]
+          } else if (type === 'sun') {
+            pts = [[0.5, 0.05], [0.53, 0.23], [0.68, 0.14], [0.64, 0.31], [0.81, 0.19], [0.72, 0.36], [0.89, 0.3], [0.76, 0.46], [0.95, 0.5], [0.76, 0.54], [0.89, 0.7], [0.72, 0.64], [0.81, 0.81], [0.64, 0.69], [0.68, 0.86], [0.53, 0.77], [0.5, 0.95], [0.47, 0.77], [0.32, 0.86], [0.36, 0.69], [0.19, 0.81], [0.28, 0.64], [0.11, 0.7], [0.24, 0.54], [0.05, 0.5], [0.24, 0.46], [0.11, 0.3], [0.28, 0.36], [0.19, 0.19], [0.36, 0.31], [0.32, 0.14], [0.47, 0.23]]
+          } else if (type === 'decagram') {
+            pts = [[0.5, 0.05], [0.57, 0.2], [0.72, 0.12], [0.70, 0.28], [0.85, 0.25], [0.78, 0.39], [0.92, 0.45], [0.81, 0.54], [0.88, 0.7], [0.75, 0.72], [0.77, 0.88], [0.63, 0.83], [0.59, 0.95], [0.48, 0.87], [0.37, 0.95], [0.33, 0.83], [0.19, 0.88], [0.21, 0.72], [0.08, 0.7], [0.15, 0.54], [0.04, 0.45], [0.18, 0.39], [0.11, 0.25], [0.26, 0.28], [0.24, 0.12], [0.39, 0.2]]
+          } else if (type === 'hexagon') {
+            pts = [[0.30, 0], [0.90, 0], [1.20, 0.50], [0.90, 1.00], [0.30, 1.00], [0, 0.50]]
+          } else if (type === 'diamond') {
+            pts = [[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]]
+          } else if (type === 'pentagon') {
+            pts = [[0.5, 0.05], [0.95, 0.38], [0.78, 0.92], [0.22, 0.92], [0.05, 0.38]]
+          } else if (type === 'octagon') {
+            pts = [[0.30, 0.05], [0.70, 0.05], [0.95, 0.30], [0.95, 0.70], [0.70, 0.95], [0.30, 0.95], [0.05, 0.70], [0.05, 0.30]]
+          } else if (type === 'leftArrowBlock') {
+            pts = [[0,0.5], [0.4,0.15], [0.4,0.35], [1,0.35], [1,0.65], [0.4,0.65], [0.4,0.85]]
+          } else if (type === 'rightArrowBlock') {
+            pts = [[1,0.5], [0.6,0.15], [0.6,0.35], [0,0.35], [0,0.65], [0.6,0.65], [0.6,0.85]]
+          } else if (type === 'leftRightArrowBlock') {
+            pts = [[0,0.5], [0.25,0.25], [0.25,0.4], [0.75,0.4], [0.75,0.25], [1,0.5], [0.75,0.75], [0.75,0.6], [0.25,0.6], [0.25,0.75]]
+          } else if (type === 'chevronArrowBlock') {
+            pts = [[0,0.25], [0.5,0.25], [0.5,0.1], [0.9,0.5], [0.5,0.9], [0.5,0.75], [0,0.75], [0.4,0.5]]
+          } else if (type === 'pentagonArrowBlock') {
+            pts = [[0,0.35], [0.6,0.35], [0.6,0.15], [1,0.5], [0.6,0.85], [0.6,0.65], [0,0.65]]
+          }
+
+          if (pts.length > 0) {
+            ctx.beginPath()
+            ctx.moveTo(x + w * pts[0][0], y + h * pts[0][1])
+            for (let i = 1; i < pts.length; i++) {
+              ctx.lineTo(x + w * pts[i][0], y + h * pts[i][1])
+            }
+            ctx.closePath()
+            if (fill !== 'transparent') ctx.fill()
+            if (strokeWidth > 0) ctx.stroke()
+          } else {
+            // Default fallback
+            ctx.beginPath()
+            ctx.rect(x, y, w, h)
+            if (fill !== 'transparent') ctx.fill()
+            if (strokeWidth > 0) ctx.stroke()
+          }
         }
+        ctx.restore()
         break
+      }
 
       case 'image':
         try {
