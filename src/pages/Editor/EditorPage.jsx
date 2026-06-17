@@ -1696,7 +1696,7 @@ const EditorPage = () => {
 
       setCamera(prev => {
         const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
-        const newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 15.0);
+        const newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 40.0);
         
         if (rect) {
           return {
@@ -3883,6 +3883,7 @@ const EditorPage = () => {
   }, [camera.zoom, camera.panX, camera.panY, worldBounds.width, worldBounds.height, getViewportSize, cameraForCenter, setZoom, cancelCameraAnim])
   const updateCameraToBox = useCallback((box, zoomScale = 0.8) => {
     if (!canvasRef.current || !box) return
+    cancelCameraAnim()
     const rect = canvasRef.current.getBoundingClientRect()
     const viewportW = Math.max(360, rect.width)
     const viewportH = Math.max(280, rect.height)
@@ -3909,14 +3910,14 @@ const EditorPage = () => {
     setIsNavigating(false)
     setCamera({ zoom: targetZoom, panX, panY })
     setZoom(Math.round(targetZoom * 100))
-  }, [worldBounds.height, worldBounds.width, setZoom])
+  }, [worldBounds.height, worldBounds.width, setZoom, cancelCameraAnim])
 
   const focusOverview = useCallback(() => {
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
     const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
-    updateCameraToBox({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
+    animateToFrameTwoStage({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
     setEditorMode('overview')
-  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, updateCameraToBox, setEditorMode])
+  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, animateToFrameTwoStage, setEditorMode])
 
 const focusFrameById = useCallback((frameId) => {
     const target = frameMapLayout.find(f => f.id === frameId)
@@ -5457,7 +5458,8 @@ const handleAddFrame = useCallback((templateType) => {
                 onClick={() => {
                   // #04 — Smooth zoom with CSS transition
                   setIsNavigating(false) // enable CSS transition
-                  const next = Math.max(0.1, camera.zoom - 0.1)
+                  // Geometric zoom: divide by 1.15 and clamp at 0.05
+                  const next = Math.max(0.05, Math.min(40.0, camera.zoom / 1.15))
                   if (canvasRef.current) {
                     const rect = canvasRef.current.getBoundingClientRect()
                     const originX = worldBounds.width / 2
@@ -5492,7 +5494,8 @@ const handleAddFrame = useCallback((templateType) => {
                 onClick={() => {
                   // #04 — Smooth zoom with CSS transition
                   setIsNavigating(false) // enable CSS transition
-                  const next = Math.min(15.0, camera.zoom + 0.1)
+                  // Geometric zoom: multiply by 1.15 and clamp at 40.0
+                  const next = Math.max(0.05, Math.min(40.0, camera.zoom * 1.15))
                   if (canvasRef.current) {
                     const rect = canvasRef.current.getBoundingClientRect()
                     const originX = worldBounds.width / 2
