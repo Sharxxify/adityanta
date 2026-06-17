@@ -3927,18 +3927,6 @@ const EditorPage = () => {
     setZoom(Math.round(targetZoom * 100))
   }, [worldBounds.height, worldBounds.width, setZoom, cancelCameraAnim])
 
-  const focusOverview = useCallback(() => {
-    const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
-    const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
-    animateToFrameTwoStage({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
-    setEditorMode('overview')
-  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, animateToFrameTwoStage, setEditorMode])
-
-const focusFrameById = useCallback((frameId) => {
-    const target = frameMapLayout.find(f => f.id === frameId)
-    if (target) updateCameraToBox(target, 0.96)
-  }, [frameMapLayout, updateCameraToBox])
-
 // Prezi-style smooth zoom: van Wijk single-curve animation.
   // Replaces the old "pull back and dive" two-stage approach with a
   // mathematically smooth path through (pan, log-zoom) space. Feels
@@ -3958,6 +3946,18 @@ const focusFrameById = useCallback((frameId) => {
 
     animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
   }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
+
+  const focusOverview = useCallback(() => {
+    const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
+    const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
+    animateToFrameTwoStage({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
+    setEditorMode('overview')
+  }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, animateToFrameTwoStage, setEditorMode])
+
+  const focusFrameById = useCallback((frameId) => {
+    const target = frameMapLayout.find(f => f.id === frameId)
+    if (target) updateCameraToBox(target, 0.96)
+  }, [frameMapLayout, updateCameraToBox])
 
 // Reset the camera-init flag whenever a template starts loading, so the
   // overview effect below will re-fire after the new template's frames and
