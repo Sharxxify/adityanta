@@ -4003,9 +4003,11 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
         // Re-clicking the active frame: just snap-zoom in single-stage. There's
         // nothing to "fly between", so the two-stage arc would feel weird.
         if (target) updateCameraToBox(target, 0.85)
+        setIsFrameFocused(true)
       } else if (mode === 'overview') {
         // Overview from any state stays single-stage (Q7).
         focusOverview()
+        setIsFrameFocused(false)
       }
       pendingFocusModeRef.current = null
       setEditorMode(mode)
@@ -4021,6 +4023,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
       setEditorMode('frame')
+      setIsFrameFocused(true)
       return
     }
 
@@ -4030,6 +4033,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       setActiveFrameId(frameId)
       pendingFocusModeRef.current = null
       setEditorMode('overview')
+      setIsFrameFocused(false)
       return
     }
 
@@ -4037,7 +4041,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     pendingFocusModeRef.current = mode
     setActiveFrameId(frameId)
     setEditorMode(mode)
-  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode])
+  }, [setActiveFrameId, activeFrameId, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode, setIsFrameFocused])
 
  // #01 — Single click selects, double-click zooms to frame
   const handleFrameSingleClick = useCallback((frameId) => {
