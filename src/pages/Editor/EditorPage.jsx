@@ -3881,6 +3881,26 @@ const EditorPage = () => {
 
     cameraAnimRef.current.raf = requestAnimationFrame(tick)
   }, [camera.zoom, camera.panX, camera.panY, worldBounds.width, worldBounds.height, getViewportSize, cameraForCenter, setZoom, cancelCameraAnim])
+  // Prezi-style smooth zoom: van Wijk single-curve animation.
+  // Replaces the old "pull back and dive" two-stage approach with a
+  // mathematically smooth path through (pan, log-zoom) space. Feels
+  // continuous, no perceptible stage break, constant on-screen speed.
+  const animateToFrameTwoStage = useCallback((targetBox, zoomScale = 0.85) => {
+    // Target world-space center and the world-width we want to show.
+    const targetCenterX = targetBox.x + targetBox.width / 2
+    const targetCenterY = targetBox.y + targetBox.height / 2
+
+    // What "width of world" do we want to show on screen at the target?
+    // = box dimension scaled up by 1/zoomScale so there's a little padding.
+    const { w: vpW, h: vpH } = getViewportSize()
+    const targetW = Math.max(
+      targetBox.width / zoomScale,
+      (targetBox.height / zoomScale) * (vpW / vpH)
+    )
+
+    animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
+  }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
+
   const updateCameraToBox = useCallback((box, zoomScale = 0.8) => {
     if (!canvasRef.current || !box) return
     cancelCameraAnim()
@@ -3923,26 +3943,6 @@ const focusFrameById = useCallback((frameId) => {
     const target = frameMapLayout.find(f => f.id === frameId)
     if (target) updateCameraToBox(target, 0.96)
   }, [frameMapLayout, updateCameraToBox])
-
-// Prezi-style smooth zoom: van Wijk single-curve animation.
-  // Replaces the old "pull back and dive" two-stage approach with a
-  // mathematically smooth path through (pan, log-zoom) space. Feels
-  // continuous, no perceptible stage break, constant on-screen speed.
-  const animateToFrameTwoStage = useCallback((targetBox, zoomScale = 0.85) => {
-    // Target world-space center and the world-width we want to show.
-    const targetCenterX = targetBox.x + targetBox.width / 2
-    const targetCenterY = targetBox.y + targetBox.height / 2
-
-    // What "width of world" do we want to show on screen at the target?
-    // = box dimension scaled up by 1/zoomScale so there's a little padding.
-    const { w: vpW, h: vpH } = getViewportSize()
-    const targetW = Math.max(
-      targetBox.width / zoomScale,
-      (targetBox.height / zoomScale) * (vpW / vpH)
-    )
-
-    animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
-  }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
 
 // Reset the camera-init flag whenever a template starts loading, so the
   // overview effect below will re-fire after the new template's frames and
