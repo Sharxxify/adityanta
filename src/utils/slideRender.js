@@ -272,12 +272,34 @@ const createTextNode = (element, scaleX, scaleY, extra = {}) => {
 
 const createShapeGraphic = (element) => {
   const type = element.shapeType || 'rectangle'
-  if (type === 'circle' || type === 'rectangle') {
+  if (type === 'circle' || type === 'oval') {
     const div = document.createElement('div')
     div.style.width = '100%'
     div.style.height = '100%'
     div.style.backgroundColor = element.fill || '#4CAF50'
-    div.style.borderRadius = type === 'circle' ? '50%' : `${element.borderRadius || (type === 'rectangle' ? 4 : 0)}px`
+    div.style.borderRadius = '50%'
+    if (element.strokeWidth) {
+      div.style.border = `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor || '#333333'}`
+    }
+    return div
+  }
+  if (type === 'roundedRectangle') {
+    const div = document.createElement('div')
+    div.style.width = '100%'
+    div.style.height = '100%'
+    div.style.backgroundColor = element.fill || '#4CAF50'
+    div.style.borderRadius = `${element.borderRadius ?? 16}px`
+    if (element.strokeWidth) {
+      div.style.border = `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor || '#333333'}`
+    }
+    return div
+  }
+  if (type === 'square' || type === 'rectangle' || type === 'tallRectangle') {
+    const div = document.createElement('div')
+    div.style.width = '100%'
+    div.style.height = '100%'
+    div.style.backgroundColor = element.fill || '#4CAF50'
+    div.style.borderRadius = element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' || type === 'tallRectangle' ? '4px' : '0px')
     if (element.strokeWidth) {
       div.style.border = `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor || '#333333'}`
     }

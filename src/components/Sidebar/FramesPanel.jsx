@@ -47,8 +47,8 @@ const MiniCanvasPreview = memo(({ elements = [], backgroundColor = '#ffffff', ba
           ...baseStyle,
           backgroundColor: el.fill || el.backgroundColor || '#e5e7eb',
           border: el.stroke ? `1px solid ${el.stroke}` : 'none',
-          borderRadius: shapeType === 'circle' || shapeType === 'ellipse' ? '50%' :
-                        shapeType === 'roundedRect' ? `4px` : '0',
+          borderRadius: shapeType === 'circle' || shapeType === 'ellipse' || shapeType === 'oval' ? '50%' :
+                        shapeType === 'roundedRectangle' || shapeType === 'roundedRect' ? `${el.borderRadius ? el.borderRadius * scale : 4}px` : '0',
           opacity: el.opacity !== undefined ? el.opacity : 1,
         }
 

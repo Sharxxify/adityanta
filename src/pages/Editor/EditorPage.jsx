@@ -2648,10 +2648,24 @@ const EditorPage = () => {
         const type = element.shapeType || 'rectangle'
         switch(type) {
           case 'circle':
+          case 'oval':
             shapeContent = (
               <div
                 className="w-full h-full rounded-full"
                 style={{ backgroundColor: element.fill, border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none', ...shapeStyle }}
+              />
+            )
+            break
+          case 'roundedRectangle':
+            shapeContent = (
+              <div
+                className="w-full h-full"
+                style={{
+                  backgroundColor: element.fill,
+                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
+                  borderRadius: `${element.borderRadius ?? 16}px`,
+                  ...shapeStyle
+                }}
               />
             )
             break
@@ -2938,6 +2952,7 @@ const EditorPage = () => {
             break
           case 'square':
           case 'rectangle':
+          case 'tallRectangle':
           default:
             shapeContent = (
               <div
@@ -2945,7 +2960,7 @@ const EditorPage = () => {
                 style={{
                   backgroundColor: element.fill,
                   border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' ? '4px' : '0px'),
+                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' || type === 'tallRectangle' ? '4px' : '0px'),
                   ...shapeStyle
                 }}
               />
@@ -4439,8 +4454,17 @@ const handleAddFrame = useCallback((templateType) => {
               <button onClick={() => { addShapeElement('rectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Rectangle">
                 <svg width="20" height="20" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" fill="#4B5563" rx="1" /></svg>
               </button>
+              <button onClick={() => { addShapeElement('roundedRectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Rounded Rectangle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" fill="#4B5563" rx="4" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('tallRectangle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Tall Rectangle">
+                <svg width="20" height="20" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" fill="#4B5563" rx="1" /></svg>
+              </button>
               <button onClick={() => { addShapeElement('circle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Circle">
                 <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#4B5563" /></svg>
+              </button>
+              <button onClick={() => { addShapeElement('oval'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Oval">
+                <svg width="20" height="20" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="6" fill="#4B5563" /></svg>
               </button>
               <button onClick={() => { addShapeElement('semicircle'); setShowShapeOptions(false); }} className="flex flex-col items-center p-1.5 rounded hover:bg-gray-100 transition-all" title="Semicircle">
                 <svg width="20" height="20" viewBox="0 0 100 100"><path d="M 10 90 A 40 40 0 0 1 90 90 Z" fill="#4B5563" /></svg>

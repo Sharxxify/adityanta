@@ -997,6 +997,9 @@ const createBlankProject = () => ({
       line: { width: 200, height: 4, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
       arrow: { width: 200, height: 30, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
       doubleArrow: { width: 200, height: 40, fill: '#333333', strokeWidth: 2, strokeColor: '#333333' },
+      oval: { width: 200, height: 120, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
+      roundedRectangle: { width: 200, height: 150, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333', borderRadius: 16 },
+      tallRectangle: { width: 120, height: 200, fill: 'transparent', strokeWidth: 2, strokeColor: '#333333' },
     }
     const style = shapeStyles[shapeType] || shapeStyles.rectangle
 

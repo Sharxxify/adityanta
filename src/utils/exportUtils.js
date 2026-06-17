@@ -614,12 +614,22 @@ const renderSlide = async (ctx, frame, width, height) => {
         }
 
         const type = element.shapeType || 'rectangle'
-        if (type === 'circle') {
+        if (type === 'circle' || type === 'oval') {
           ctx.beginPath()
           ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
           if (fill !== 'transparent') ctx.fill()
           if (strokeWidth > 0) ctx.stroke()
-        } else if (type === 'rectangle') {
+        } else if (type === 'roundedRectangle') {
+          ctx.beginPath()
+          const radius = (element.borderRadius ?? 16) * scaleY
+          if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(x, y, w, h, radius)
+          } else {
+            ctx.rect(x, y, w, h)
+          }
+          if (fill !== 'transparent') ctx.fill()
+          if (strokeWidth > 0) ctx.stroke()
+        } else if (type === 'rectangle' || type === 'square' || type === 'tallRectangle') {
           ctx.beginPath()
           const radius = element.borderRadius || 0
           if (radius > 0) {
@@ -920,7 +930,7 @@ const renderSlide = async (ctx, frame, width, height) => {
           } else if (type === 'pentagonArrowBlock') {
             pts = [[0,0.35], [0.6,0.35], [0.6,0.15], [1,0.5], [0.6,0.85], [0.6,0.65], [0,0.65]]
           }
-
+ 
           if (pts.length > 0) {
             ctx.beginPath()
             ctx.moveTo(x + w * pts[0][0], y + h * pts[0][1])

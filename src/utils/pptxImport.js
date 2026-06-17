@@ -1113,7 +1113,7 @@ async function parseShapeElement(spNode, elementId, emuToX, emuToY, emuToW, emuT
     opacity: 100,
     borderWidth: 0,
     borderColor: '#333333',
-    borderRadius: 0,
+    borderRadius: mapShapeType(shapePreset) === 'roundedRectangle' ? 16 : 0,
     backgroundColor: 'transparent',
   }
 }
@@ -1430,8 +1430,8 @@ async function getElementFill(node, zip) {
 function mapShapeType(preset) {
   const map = {
     rect: 'rectangle',
-    roundRect: 'rectangle',
-    ellipse: 'circle',
+    roundRect: 'roundedRectangle',
+    ellipse: 'oval',
     triangle: 'triangle',
     rtTriangle: 'triangle',
     star5: 'star',

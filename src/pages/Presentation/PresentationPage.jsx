@@ -387,6 +387,7 @@ const PresentationPage = () => {
         let pPageShapeContent
         switch(type) {
           case 'circle':
+          case 'oval':
             pPageShapeContent = (
               <div
                 key={`${element.id}-${slideKey}`}
@@ -395,6 +396,22 @@ const PresentationPage = () => {
                   ...baseStyle,
                   backgroundColor: element.fill,
                   borderRadius: '50%',
+                  opacity: shapeOpacity,
+                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
+                  transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
+                }}
+              />
+            )
+            break
+          case 'roundedRectangle':
+            pPageShapeContent = (
+              <div
+                key={`${element.id}-${slideKey}`}
+                className={animClass}
+                style={{
+                  ...baseStyle,
+                  backgroundColor: element.fill,
+                  borderRadius: `${element.borderRadius ?? 16}px`,
                   opacity: shapeOpacity,
                   border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
                   transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
@@ -685,6 +702,7 @@ const PresentationPage = () => {
             break
           case 'square':
           case 'rectangle':
+          case 'tallRectangle':
           default:
             pPageShapeContent = (
               <div
@@ -693,7 +711,7 @@ const PresentationPage = () => {
                 style={{
                   ...baseStyle,
                   backgroundColor: element.fill,
-                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' ? '4px' : '0px'),
+                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' || type === 'tallRectangle' ? '4px' : '0px'),
                   opacity: shapeOpacity,
                   border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
                   transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
