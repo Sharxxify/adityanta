@@ -5097,7 +5097,9 @@ const handleAddFrame = useCallback((templateType) => {
                         opacity: 1,
                         background: frameData?.backgroundImage
                           ? `url("${frameData.backgroundImage}") center/cover no-repeat`
-                          : (frameData?.backgroundColor && frameData.backgroundColor !== 'transparent' ? frameData.backgroundColor : 'white'),
+                          : (frameData?.backgroundColor && frameData.backgroundColor !== 'transparent'
+                              ? frameData.backgroundColor
+                              : (editorBgImage ? 'transparent' : '#ffffff')),
                         boxShadow: selectedVisual ? '0 14px 40px rgba(15, 23, 42, 0.18)' : '0 8px 24px rgba(15, 23, 42, 0.12)',
                         overflow: 'hidden',
                         transition: 'border 0.15s, box-shadow 0.15s',

@@ -551,14 +551,18 @@ const createElementNode = (element, scaleX, scaleY) => {
   return node
 }
 
-export const buildSlideRenderNode = (frame, { width = SLIDE_WIDTH, height = SLIDE_HEIGHT, header = null } = {}) => {
+export const buildSlideRenderNode = (frame, { width = SLIDE_WIDTH, height = SLIDE_HEIGHT, header = null, editorBackground = null } = {}) => {
   const root = document.createElement('div')
   root.style.position = 'relative'
   root.style.width = toPx(width)
   root.style.height = toPx(height)
   root.style.overflow = 'hidden'
-  root.style.backgroundColor = frame?.backgroundColor || '#ffffff'
-  root.style.backgroundImage = frame?.backgroundImage ? `url(${frame.backgroundImage})` : 'none'
+  root.style.backgroundColor = frame?.backgroundColor && frame.backgroundColor !== 'transparent'
+    ? frame.backgroundColor
+    : (editorBackground ? 'transparent' : '#ffffff')
+  root.style.backgroundImage = frame?.backgroundImage
+    ? `url(${frame.backgroundImage})`
+    : (editorBackground && (!frame?.backgroundColor || frame.backgroundColor === 'transparent') ? `url(${editorBackground})` : 'none')
   root.style.backgroundSize = 'cover'
   root.style.backgroundPosition = 'center'
   root.style.backgroundRepeat = 'no-repeat'

@@ -63,19 +63,22 @@ const MiniMapPreview = memo(({ frameLayouts = [], activeFrameId, editorBackgroun
 })
 MiniMapPreview.displayName = 'MiniMapPreview'
 
-const MiniCanvasPreview = memo(({ frame }) => {
+const MiniCanvasPreview = memo(({ frame, editorBackground = null }) => {
   const elements = frame?.elements || []
+
+  const bgStyle = frame?.backgroundImage
+    ? { backgroundImage: `url(${frame.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    : (frame?.backgroundColor && frame?.backgroundColor !== 'transparent'
+        ? { backgroundColor: frame.backgroundColor }
+        : (editorBackground
+            ? { backgroundImage: `url(${editorBackground})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' }
+            : { backgroundColor: '#ffffff' }))
 
   return (
     <div className="relative w-full aspect-[16/9] overflow-hidden rounded-md bg-white border border-gray-200">
       <div
         className="absolute inset-0"
-        style={{
-          backgroundColor: frame?.backgroundColor || '#ffffff',
-          backgroundImage: frame?.backgroundImage ? `url(${frame.backgroundImage})` : 'none',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-        }}
+        style={bgStyle}
       />
       {elements.slice(0, 8).map((el) => {
         if (!el || el.isPlaceholder) return null
@@ -332,7 +335,7 @@ const FramesPanelPrezi = ({
 
                 <div className="flex-1">
                   <div className="relative">
-                    <MiniCanvasPreview frame={frame} />
+                    <MiniCanvasPreview frame={frame} editorBackground={editorBackground} />
                     <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-white/95 border border-gray-300 text-[11px] flex items-center justify-center">
                       📍
                     </div>
