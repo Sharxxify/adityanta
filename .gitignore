@@ -1,0 +1,139 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env.js
+# Allow .env.example to be committed
+!.env.example
+
+# Security - Private keys and credentials
+*.pem
+*.key
+dev-*.pem
+*-firebase-adminsdk-*.json
+firebase-service-account*.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Misc
+nul
+*.nul
+
+# Deployment scripts (may contain sensitive paths)
+deploy-*.py
+deploy-*.sh
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env.js
+# Allow .env.example to be committed
+!.env.example
+
+# Security - Private keys and credentials
+*.pem
+*.key
+dev-*.pem
+*-firebase-adminsdk-*.json
+firebase-service-account*.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Misc
+nul
+*.nul
+
+# Deployment scripts (may contain sensitive paths)
+deploy-*.py
+deploy-*.sh
+deploy.bat
+server-updated.js
+
+# Test files
+test-api*.js
+ 
+# Scratch & dump files
+*.zip
+*.txt
+*.py
+pm2_info.json
+test-backend.js
+Adityaant Background Images/
+Frame 2.png
+India.pptx
+Untitled - 11 June 2026 at 19.13.28.png
+Bug List - adityanta.*
+.claude/
+
+# Scratch Scripts
+fix_*.cjs
+fix_*.py
+patch_*.cjs
+replace*.cjs
+replace*.js
+replace*.py
+script*.cjs
+script2.js
+script3.cjs
+temp*
+!src/utils/templateData.js
+!src/components/Modal/TemplateDetailModal.jsx
+update*.*
+assemble.cjs
+create_presentation.cjs
+prezi_demo.cjs
+1 9 t h   m a r c h   u p d a t e d /  
+ p a t c h . p y  
+ p a t c h _ s c r i p t . p y  
+ e d i t o r _ d i f f . t x t  
+ * . p a t c h e d . j s x  

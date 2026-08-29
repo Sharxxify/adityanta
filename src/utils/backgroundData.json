@@ -1,0 +1,74 @@
+{
+  "Business": [
+    "/backgrounds/Business/Business-1.png",
+    "/backgrounds/Business/Business-2.png"
+  ],
+  "Economics": [
+    "/backgrounds/Economics/Economics 1.png",
+    "/backgrounds/Economics/Economics 2.png",
+    "/backgrounds/Economics/Economics 3.png"
+  ],
+  "Finance": [
+    "/backgrounds/Finance/Finance1.png",
+    "/backgrounds/Finance/Finance2.png"
+  ],
+  "Fine Arts - Painting": [
+    "/backgrounds/Fine Arts - Painting/Fine-Arts1.png",
+    "/backgrounds/Fine Arts - Painting/Fine-arts2.png"
+  ],
+  "Generic": [
+    "/backgrounds/Generic/Generic-1.png",
+    "/backgrounds/Generic/Generic-2.png",
+    "/backgrounds/Generic/Generic-3.png",
+    "/backgrounds/Generic/Generic-5.png",
+    "/backgrounds/Generic/Generic-7.png",
+    "/backgrounds/Generic/Genric-4.png",
+    "/backgrounds/Generic/Genric-6.png"
+  ],
+  "Geography": [
+    "/backgrounds/Geography/Geography-1.png",
+    "/backgrounds/Geography/Geography-2.png",
+    "/backgrounds/Geography/Geography-3.png"
+  ],
+  "History": [
+    "/backgrounds/History/History 2.png",
+    "/backgrounds/History/History 3.png",
+    "/backgrounds/History/History 4.png"
+  ],
+  "Legal Studies": [
+    "/backgrounds/Legal Studies/Legal-1.png",
+    "/backgrounds/Legal Studies/Legal-2.png"
+  ],
+  "Map work (geographical locations)": [
+    "/backgrounds/Map work (geographical locations)/Geographic-1.png"
+  ],
+  "Marketing": [
+    "/backgrounds/Marketing/Marketing-1.png",
+    "/backgrounds/Marketing/Marketing-2.png"
+  ],
+  "Maths": [
+    "/backgrounds/Maths/Maths 1.png",
+    "/backgrounds/Maths/Maths 2.png"
+  ],
+  "Music and dance": [
+    "/backgrounds/Music and dance/Music and Dance-1.png",
+    "/backgrounds/Music and dance/Music and Dance-2.png"
+  ],
+  "Physical & Skill Subjects": [
+    "/backgrounds/Physical & Skill Subjects/Sports-1.png",
+    "/backgrounds/Physical & Skill Subjects/Sports-2.png"
+  ],
+  "Political Science": [
+    "/backgrounds/Political Science/Pol Science-1.png",
+    "/backgrounds/Political Science/Pol Science-2.png"
+  ],
+  "Science": [
+    "/backgrounds/Science/Science 1.png",
+    "/backgrounds/Science/Science 2.png",
+    "/backgrounds/Science/Science 3.png"
+  ],
+  "Technology & Computer Subjects": [
+    "/backgrounds/Technology & Computer Subjects/Tech-1.png",
+    "/backgrounds/Technology & Computer Subjects/Tech-2.png"
+  ]
+}
