@@ -11,7 +11,7 @@ export default defineConfig({
     // Proxy /api requests to ngrok backend during local development
     proxy: {
       '/api': {
-        target: 'https://0411-213-93-15-162.ngrok-free.app',
+        target: 'https://8106-2001-638-911-b20-00-7e.ngrok-free.app',
         changeOrigin: true,
         headers: {
           'ngrok-skip-browser-warning': 'true',
