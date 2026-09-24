@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-const RightClickMenu = ({ x, y, onClose, onAction, hasSelection = false, currentBackground = '#ffffff', currentColor = '#2E7D32' }) => {
+const RightClickMenu = ({ x, y, onClose, onAction, hasSelection = false, isLocked = false, currentBackground = '#ffffff', currentColor = '#2E7D32' }) => {
   const [showBackgroundPicker, setShowBackgroundPicker] = useState(false)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [selectedColor, setSelectedColor] = useState(currentBackground)
@@ -43,6 +43,7 @@ const RightClickMenu = ({ x, y, onClose, onAction, hasSelection = false, current
     ...(hasSelection ? [
       { id: 'copy', label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C' },
       { id: 'duplicate', label: 'Duplicate', icon: 'duplicate' },
+      { id: 'toggleLock', label: isLocked ? 'Unlock' : 'Lock', icon: isLocked ? 'unlock' : 'lock' },
       { id: 'delete', label: 'Delete', icon: 'trash', shortcut: 'Del' },
       { type: 'divider' },
       { id: 'bringToFront', label: 'Bring to Front', icon: 'layerUp' },
@@ -96,6 +97,14 @@ const RightClickMenu = ({ x, y, onClose, onAction, hasSelection = false, current
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
             <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
+          </svg>
+        )
+      case 'lock':
+      case 'unlock':
+        return (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d={type === 'lock' ? 'M8 11V7a4 4 0 0 1 8 0v4' : 'M8 11V7a4 4 0 0 1 7.5-2'} />
           </svg>
         )
       case 'copy':

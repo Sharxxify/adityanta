@@ -1,0 +1,985 @@
+import tinycolor from 'tinycolor2'
+import { getSchemeColorFromTheme } from './schemeColor'
+import { orderedChildren, getThemeStyleEntry } from './styleRef' // ADITYANTA
+import {
+  applyShade,
+  applyTint,
+  applyLumOff,
+  applyLumMod,
+  applyHueMod,
+  applySatMod,
+  hslToRgb,
+  getColorName2Hex,
+} from './color'
+
+import {
+  base64ArrayBuffer,
+  getTextByPathList,
+  angleToDegrees,
+  escapeHtml,
+  getMimeType,
+  toHex,
+} from './utils'
+
+export function getFillType(node) {
+  let fillType = ''
+  if (node['a:noFill']) fillType = 'NO_FILL'
+  if (node['a:solidFill']) fillType = 'SOLID_FILL'
+  if (node['a:gradFill']) fillType = 'GRADIENT_FILL'
+  if (node['a:pattFill']) fillType = 'PATTERN_FILL'
+  if (node['a:blipFill']) fillType = 'PIC_FILL'
+  if (node['a:grpFill']) fillType = 'GROUP_FILL'
+
+  return fillType
+}
+
+function createImageData(ref = '') {
+  return {
+    ref,
+    base64: '',
+    blob: '',
+  }
+}
+
+function createMediaData(ref = '') {
+  return {
+    ref,
+    blob: '',
+  }
+}
+
+function getMediaCache(warpObj, cacheKey) {
+  const cache = warpObj[cacheKey] || {}
+  warpObj[cacheKey] = cache
+  return cache
+}
+
+async function loadMedia(filePath, warpObj, cacheKey, mode = 'base64') {
+  if (!filePath || (mode !== 'base64' && mode !== 'blob')) return ''
+
+  const normalizedPath = escapeHtml(filePath)
+  const cache = getMediaCache(warpObj, cacheKey)
+  const cacheItem = cache[normalizedPath] || { base64: '', blob: '' }
+  cache[normalizedPath] = cacheItem
+
+  if (cacheItem[mode]) return cacheItem[mode]
+
+  const fileExt = normalizedPath.split('.').pop().toLowerCase()
+  if (fileExt === 'xml') return ''
+
+  const arrayBuffer = await warpObj['zip'].file(normalizedPath).async('arraybuffer')
+  const mimeType = getMimeType(fileExt)
+
+  if (mode === 'base64') {
+    cacheItem.base64 = `data:${mimeType};base64,${base64ArrayBuffer(arrayBuffer)}`
+  }
+  else if (mode === 'blob') {
+    cacheItem.blob = URL.createObjectURL(new Blob([arrayBuffer], mimeType ? {
+      type: mimeType
+    } : undefined))
+  }
+
+  return cacheItem[mode]
+}
+
+export async function loadImage(imgPath, warpObj, mode = 'base64') {
+  return await loadMedia(imgPath, warpObj, 'loadedImages', mode)
+}
+
+export async function loadVideo(videoPath, warpObj, mode = 'blob') {
+  if (mode !== 'blob') return ''
+  return await loadMedia(videoPath, warpObj, 'loadedVideos', 'blob')
+}
+
+export async function loadAudio(audioPath, warpObj, mode = 'blob') {
+  if (mode !== 'blob') return ''
+  return await loadMedia(audioPath, warpObj, 'loadedAudios', 'blob')
+}
+
+function getImageMode(warpObj) {
+  const imageMode = getTextByPathList(warpObj, ['options', 'imageMode'])
+  if (imageMode === 'blob' || imageMode === 'both' || imageMode === 'none') return imageMode
+  return 'base64'
+}
+
+function getVideoMode(warpObj) {
+  const videoMode = getTextByPathList(warpObj, ['options', 'videoMode'])
+  if (videoMode === 'blob') return 'blob'
+  return 'none'
+}
+
+function getAudioMode(warpObj) {
+  const audioMode = getTextByPathList(warpObj, ['options', 'audioMode'])
+  if (audioMode === 'blob') return 'blob'
+  return 'none'
+}
+
+export async function getImageData(imgPath, warpObj) {
+  const imageData = createImageData(imgPath || '')
+  if (!imgPath) return imageData
+
+  const imageMode = getImageMode(warpObj)
+  if (imageMode === 'base64' || imageMode === 'both') {
+    imageData.base64 = await loadImage(imgPath, warpObj, 'base64')
+  }
+  if (imageMode === 'blob' || imageMode === 'both') {
+    imageData.blob = await loadImage(imgPath, warpObj, 'blob')
+  }
+
+  return imageData
+}
+
+export async function getVideoData(videoPath, warpObj) {
+  const videoData = createMediaData(videoPath || '')
+  if (!videoPath) return videoData
+
+  if (getVideoMode(warpObj) === 'blob') {
+    videoData.blob = await loadVideo(videoPath, warpObj, 'blob')
+  }
+
+  return videoData
+}
+
+export async function getAudioData(audioPath, warpObj) {
+  const audioData = createMediaData(audioPath || '')
+  if (!audioPath) return audioData
+
+  if (getAudioMode(warpObj) === 'blob') {
+    audioData.blob = await loadAudio(audioPath, warpObj, 'blob')
+  }
+
+  return audioData
+}
+
+export async function getPicFill(type, node, warpObj) {
+  if (!node) return createImageData()
+
+  const rId = getTextByPathList(node, ['a:blip', 'attrs', 'r:embed'])
+  let imgPath
+  if (type === 'slideBg' || type === 'slide') {
+    imgPath = getTextByPathList(warpObj, ['slideResObj', rId, 'target'])
+  }
+  else if (type === 'slideLayoutBg') {
+    imgPath = getTextByPathList(warpObj, ['layoutResObj', rId, 'target'])
+  }
+  else if (type === 'slideMasterBg') {
+    imgPath = getTextByPathList(warpObj, ['masterResObj', rId, 'target'])
+  }
+  else if (type === 'themeBg') {
+    imgPath = getTextByPathList(warpObj, ['themeResObj', rId, 'target'])
+  }
+  else if (type === 'diagramBg') {
+    imgPath = getTextByPathList(warpObj, ['diagramResObj', rId, 'target'])
+  }
+  if (!imgPath) return createImageData()
+
+  return await getImageData(imgPath, warpObj)
+}
+
+export function getPicFillOpacity(node) {
+  const aBlipNode = node['a:blip']
+
+  const aphaModFixNode = getTextByPathList(aBlipNode, ['a:alphaModFix', 'attrs'])
+  let opacity = 1
+  if (aphaModFixNode && aphaModFixNode['amt'] && aphaModFixNode['amt'] !== '') {
+    opacity = parseInt(aphaModFixNode['amt']) / 100000
+  }
+
+  return opacity
+}
+
+export function getPicFilters(node) {
+  if (!node) return null
+
+  const aBlipNode = node['a:blip']
+  if (!aBlipNode) return null
+
+  const filters = {}
+
+  // 从a:extLst中获取滤镜效果（Microsoft Office 2010+扩展）
+  const extLstNode = aBlipNode['a:extLst']
+  if (extLstNode && extLstNode['a:ext']) {
+    const extNodes = Array.isArray(extLstNode['a:ext']) ? extLstNode['a:ext'] : [extLstNode['a:ext']]
+
+    for (const extNode of extNodes) {
+      if (!extNode['a14:imgProps'] || !extNode['a14:imgProps']['a14:imgLayer']) continue
+
+      const imgLayerNode = extNode['a14:imgProps']['a14:imgLayer']
+      const imgEffects = imgLayerNode['a14:imgEffect']
+
+      if (!imgEffects) continue
+
+      const effectArray = Array.isArray(imgEffects) ? imgEffects : [imgEffects]
+
+      for (const effect of effectArray) {
+        // 饱和度
+        if (effect['a14:saturation']) {
+          const satAttr = getTextByPathList(effect, ['a14:saturation', 'attrs', 'sat'])
+          if (satAttr) {
+            filters.saturation = parseInt(satAttr) / 100000
+          }
+        }
+
+        // 亮度、对比度
+        if (effect['a14:brightnessContrast']) {
+          const brightAttr = getTextByPathList(effect, ['a14:brightnessContrast', 'attrs', 'bright'])
+          const contrastAttr = getTextByPathList(effect, ['a14:brightnessContrast', 'attrs', 'contrast'])
+
+          if (brightAttr) {
+            filters.brightness = parseInt(brightAttr) / 100000
+          }
+          if (contrastAttr) {
+            filters.contrast = parseInt(contrastAttr) / 100000
+          }
+        }
+
+        // 锐化/柔化
+        if (effect['a14:sharpenSoften']) {
+          const amountAttr = getTextByPathList(effect, ['a14:sharpenSoften', 'attrs', 'amount'])
+          if (amountAttr) {
+            const amount = parseInt(amountAttr) / 100000
+            if (amount > 0) {
+              filters.sharpen = amount
+            }
+            else {
+              filters.soften = Math.abs(amount)
+            }
+          }
+        }
+
+        // 色温
+        if (effect['a14:colorTemperature']) {
+          const tempAttr = getTextByPathList(effect, ['a14:colorTemperature', 'attrs', 'colorTemp'])
+          if (tempAttr) {
+            filters.colorTemperature = parseInt(tempAttr)
+          }
+        }
+      }
+    }
+  }
+
+  return Object.keys(filters).length > 0 ? filters : null
+}
+
+export async function getBgPicFill(bgPr, sorce, warpObj) {
+  const picFill = await getPicFill(sorce, bgPr['a:blipFill'], warpObj)
+  const aBlipNode = bgPr['a:blipFill']['a:blip']
+
+  const aphaModFixNode = getTextByPathList(aBlipNode, ['a:alphaModFix', 'attrs'])
+  let opacity = 1
+  if (aphaModFixNode && aphaModFixNode['amt'] && aphaModFixNode['amt'] !== '') {
+    opacity = parseInt(aphaModFixNode['amt']) / 100000
+  }
+
+  return {
+    ref: picFill.ref,
+    base64: picFill.base64,
+    blob: picFill.blob,
+    opacity,
+  }
+}
+
+export function getGradientFill(node, warpObj, phClr) {
+  // ADITYANTA: phClr support (theme fill styles) + single-stop lists
+  let gsLst = getTextByPathList(node, ['a:gsLst', 'a:gs']) || []
+  if (!Array.isArray(gsLst)) gsLst = [gsLst]
+  const colors = []
+  for (let i = 0; i < gsLst.length; i++) {
+    const lo_color = getSolidFill(gsLst[i], undefined, phClr, warpObj)
+    const pos = getTextByPathList(gsLst[i], ['attrs', 'pos'])
+
+    colors[i] = {
+      pos: pos ? (pos / 1000 + '%') : '',
+      color: lo_color,
+    }
+  }
+  const lin = node['a:lin']
+  let rot = 0
+  let pathType = 'line'
+  if (lin) rot = angleToDegrees(lin['attrs']['ang'])
+  else {
+    const path = node['a:path']
+    if (path && path['attrs'] && path['attrs']['path']) pathType = path['attrs']['path']
+  }
+  return {
+    rot,
+    path: pathType,
+    colors: colors.sort((a, b) => parseInt(a.pos) - parseInt(b.pos)),
+  }
+}
+
+export function getPatternFill(node, warpObj) {
+  if (!node) return null
+
+  const pattFill = node['a:pattFill']
+  if (!pattFill) return null
+
+  const type = getTextByPathList(pattFill, ['attrs', 'prst'])
+
+  const fgColorNode = pattFill['a:fgClr']
+  const bgColorNode = pattFill['a:bgClr']
+
+  let foregroundColor = '#000000'
+  let backgroundColor = '#FFFFFF'
+
+  if (fgColorNode) {
+    foregroundColor = getSolidFill(fgColorNode, undefined, undefined, warpObj)
+  }
+
+  if (bgColorNode) {
+    backgroundColor = getSolidFill(bgColorNode, undefined, undefined, warpObj)
+  }
+
+  return {
+    type,
+    foregroundColor,
+    backgroundColor,
+  }
+}
+
+export function getBgGradientFill(bgPr, phClr, slideMasterContent, warpObj) {
+  if (bgPr) {
+    const grdFill = bgPr['a:gradFill']
+    const gsLst = grdFill['a:gsLst']['a:gs']
+    const colors = []
+    
+    for (let i = 0; i < gsLst.length; i++) {
+      const lo_color = getSolidFill(gsLst[i], slideMasterContent['p:sldMaster']['p:clrMap']['attrs'], phClr, warpObj)
+      const pos = getTextByPathList(gsLst[i], ['attrs', 'pos'])
+
+      colors[i] = {
+        pos: pos ? (pos / 1000 + '%') : '',
+        color: lo_color,
+      }
+    }
+    const lin = grdFill['a:lin']
+    let rot = 0
+    let pathType = 'line'
+    if (lin) rot = angleToDegrees(lin['attrs']['ang']) + 0
+    else {
+      const path = grdFill['a:path']
+      if (path && path['attrs'] && path['attrs']['path']) pathType = path['attrs']['path'] 
+    }
+    return {
+      rot,
+      path: pathType,
+      colors: colors.sort((a, b) => parseInt(a.pos) - parseInt(b.pos)),
+    }
+  }
+  else if (phClr) {
+    return phClr.indexOf('#') === -1 ? `#${phClr}` : phClr
+  }
+  return null
+}
+
+export async function getSlideBackgroundFill(warpObj) {
+  const slideContent = warpObj['slideContent']
+  const slideLayoutContent = warpObj['slideLayoutContent']
+  const slideMasterContent = warpObj['slideMasterContent']
+  
+  let bgPr = getTextByPathList(slideContent, ['p:sld', 'p:cSld', 'p:bg', 'p:bgPr'])
+  let bgRef = getTextByPathList(slideContent, ['p:sld', 'p:cSld', 'p:bg', 'p:bgRef'])
+
+  let background = '#fff'
+  let backgroundType = 'color'
+
+  if (bgPr) {
+    const bgFillTyp = getFillType(bgPr)
+
+    if (bgFillTyp === 'SOLID_FILL') {
+      const sldFill = bgPr['a:solidFill']
+      let clrMapOvr
+      const sldClrMapOvr = getTextByPathList(slideContent, ['p:sld', 'p:clrMapOvr', 'a:overrideClrMapping', 'attrs'])
+      if (sldClrMapOvr) clrMapOvr = sldClrMapOvr
+      else {
+        const sldClrMapOvr = getTextByPathList(slideLayoutContent, ['p:sldLayout', 'p:clrMapOvr', 'a:overrideClrMapping', 'attrs'])
+        if (sldClrMapOvr) clrMapOvr = sldClrMapOvr
+        else clrMapOvr = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:clrMap', 'attrs'])
+      }
+      const sldBgClr = getSolidFill(sldFill, clrMapOvr, undefined, warpObj)
+      background = sldBgClr
+    }
+    else if (bgFillTyp === 'GRADIENT_FILL') {
+      const gradientFill = getBgGradientFill(bgPr, undefined, slideMasterContent, warpObj)
+      if (typeof gradientFill === 'string') {
+        background = gradientFill
+      }
+      else if (gradientFill) {
+        background = gradientFill
+        backgroundType = 'gradient'
+      }
+    }
+    else if (bgFillTyp === 'PIC_FILL') {
+      background = await getBgPicFill(bgPr, 'slideBg', warpObj)
+      backgroundType = 'image'
+    }
+    else if (bgFillTyp === 'PATTERN_FILL') {
+      const patternFill = getPatternFill(bgPr, warpObj)
+      if (patternFill) {
+        background = patternFill
+        backgroundType = 'pattern'
+      }
+    }
+  }
+  else if (bgRef) {
+    let clrMapOvr
+    const sldClrMapOvr = getTextByPathList(slideContent, ['p:sld', 'p:clrMapOvr', 'a:overrideClrMapping', 'attrs'])
+    if (sldClrMapOvr) clrMapOvr = sldClrMapOvr
+    else {
+      const sldClrMapOvr = getTextByPathList(slideLayoutContent, ['p:sldLayout', 'p:clrMapOvr', 'a:overrideClrMapping', 'attrs'])
+      if (sldClrMapOvr) clrMapOvr = sldClrMapOvr
+      else clrMapOvr = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:clrMap', 'attrs'])
+    }
+    const phClr = getSolidFill(bgRef, clrMapOvr, undefined, warpObj)
+    const idx = Number(bgRef['attrs']['idx'])
+
+    if (idx > 1000) {
+      const trueIdx = idx - 1000
+      const bgFillLst = warpObj['themeContent']['a:theme']['a:themeElements']['a:fmtScheme']['a:bgFillStyleLst']
+      const sortblAry = []
+      Object.keys(bgFillLst).forEach(key => {
+        const bgFillLstTyp = bgFillLst[key]
+        if (key !== 'attrs') {
+          if (bgFillLstTyp.constructor === Array) {
+            for (let i = 0; i < bgFillLstTyp.length; i++) {
+              const obj = {}
+              obj[key] = bgFillLstTyp[i]
+              if (bgFillLstTyp[i]['attrs']) {
+                obj['idex'] = bgFillLstTyp[i]['attrs']['order']
+                obj['attrs'] = {
+                  'order': bgFillLstTyp[i]['attrs']['order']
+                }
+              }
+              sortblAry.push(obj)
+            }
+          } 
+          else {
+            const obj = {}
+            obj[key] = bgFillLstTyp
+            if (bgFillLstTyp['attrs']) {
+              obj['idex'] = bgFillLstTyp['attrs']['order']
+              obj['attrs'] = {
+                'order': bgFillLstTyp['attrs']['order']
+              }
+            }
+            sortblAry.push(obj)
+          }
+        }
+      })
+      const sortByOrder = sortblAry.slice(0)
+      sortByOrder.sort((a, b) => a.idex - b.idex)
+      const bgFillLstIdx = sortByOrder[trueIdx - 1]
+      const bgFillTyp = getFillType(bgFillLstIdx)
+      if (bgFillTyp === 'SOLID_FILL') {
+        const sldFill = bgFillLstIdx['a:solidFill']
+        // ADITYANTA: the theme's background style is usually phClr
+        const sldBgClr = getSolidFill(sldFill, clrMapOvr, phClr, warpObj)
+        background = sldBgClr
+      } 
+      else if (bgFillTyp === 'GRADIENT_FILL') {
+        const gradientFill = getBgGradientFill(bgFillLstIdx, phClr, slideMasterContent, warpObj)
+        if (typeof gradientFill === 'string') {
+          background = gradientFill
+        }
+        else if (gradientFill) {
+          background = gradientFill
+          backgroundType = 'gradient'
+        }
+      }
+    }
+  }
+  else {
+    bgPr = getTextByPathList(slideLayoutContent, ['p:sldLayout', 'p:cSld', 'p:bg', 'p:bgPr'])
+    bgRef = getTextByPathList(slideLayoutContent, ['p:sldLayout', 'p:cSld', 'p:bg', 'p:bgRef'])
+
+    let clrMapOvr
+    const sldClrMapOvr = getTextByPathList(slideLayoutContent, ['p:sldLayout', 'p:clrMapOvr', 'a:overrideClrMapping', 'attrs'])
+    if (sldClrMapOvr) clrMapOvr = sldClrMapOvr
+    else clrMapOvr = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:clrMap', 'attrs'])
+
+    if (bgPr) {
+      const bgFillTyp = getFillType(bgPr)
+      if (bgFillTyp === 'SOLID_FILL') {
+        const sldFill = bgPr['a:solidFill']
+        const sldBgClr = getSolidFill(sldFill, clrMapOvr, undefined, warpObj)
+        background = sldBgClr
+      }
+      else if (bgFillTyp === 'GRADIENT_FILL') {
+        const gradientFill = getBgGradientFill(bgPr, undefined, slideMasterContent, warpObj)
+        if (typeof gradientFill === 'string') {
+          background = gradientFill
+        }
+        else if (gradientFill) {
+          background = gradientFill
+          backgroundType = 'gradient'
+        }
+      }
+      else if (bgFillTyp === 'PIC_FILL') {
+        background = await getBgPicFill(bgPr, 'slideLayoutBg', warpObj)
+        backgroundType = 'image'
+      }
+      else if (bgFillTyp === 'PATTERN_FILL') {
+        const patternFill = getPatternFill(bgPr, warpObj)
+        if (patternFill) {
+          background = patternFill
+          backgroundType = 'pattern'
+        }
+      }
+    }
+    else if (bgRef) {
+      const phClr = getSolidFill(bgRef, clrMapOvr, undefined, warpObj)
+      const idx = Number(bgRef['attrs']['idx'])
+  
+      if (idx > 1000) {
+        const trueIdx = idx - 1000
+        const bgFillLst = warpObj['themeContent']['a:theme']['a:themeElements']['a:fmtScheme']['a:bgFillStyleLst']
+        const sortblAry = []
+        Object.keys(bgFillLst).forEach(key => {
+          const bgFillLstTyp = bgFillLst[key]
+          if (key !== 'attrs') {
+            if (bgFillLstTyp.constructor === Array) {
+              for (let i = 0; i < bgFillLstTyp.length; i++) {
+                const obj = {}
+                obj[key] = bgFillLstTyp[i]
+                if (bgFillLstTyp[i]['attrs']) {
+                  obj['idex'] = bgFillLstTyp[i]['attrs']['order']
+                  obj['attrs'] = {
+                    'order': bgFillLstTyp[i]['attrs']['order']
+                  }
+                }
+                sortblAry.push(obj)
+              }
+            } 
+            else {
+              const obj = {}
+              obj[key] = bgFillLstTyp
+              if (bgFillLstTyp['attrs']) {
+                obj['idex'] = bgFillLstTyp['attrs']['order']
+                obj['attrs'] = {
+                  'order': bgFillLstTyp['attrs']['order']
+                }
+              }
+              sortblAry.push(obj)
+            }
+          }
+        })
+        const sortByOrder = sortblAry.slice(0)
+        sortByOrder.sort((a, b) => a.idex - b.idex)
+        const bgFillLstIdx = sortByOrder[trueIdx - 1]
+        const bgFillTyp = getFillType(bgFillLstIdx)
+        if (bgFillTyp === 'SOLID_FILL') {
+          const sldFill = bgFillLstIdx['a:solidFill']
+          const sldBgClr = getSolidFill(sldFill, clrMapOvr, phClr, warpObj)
+          background = sldBgClr
+        }
+        else if (bgFillTyp === 'GRADIENT_FILL') {
+          const gradientFill = getBgGradientFill(bgFillLstIdx, phClr, slideMasterContent, warpObj)
+          if (typeof gradientFill === 'string') {
+            background = gradientFill
+          }
+          else if (gradientFill) {
+            background = gradientFill
+            backgroundType = 'gradient'
+          }
+        }
+        else if (bgFillTyp === 'PIC_FILL') {
+          background = await getBgPicFill(bgFillLstIdx, 'themeBg', warpObj)
+          backgroundType = 'image'
+        }
+        else if (bgFillTyp === 'PATTERN_FILL') {
+          const patternFill = getPatternFill(bgFillLstIdx, warpObj)
+          if (patternFill) {
+            background = patternFill
+            backgroundType = 'pattern'
+          }
+        }
+      }
+    }
+    else {
+      bgPr = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:cSld', 'p:bg', 'p:bgPr'])
+      bgRef = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:cSld', 'p:bg', 'p:bgRef'])
+
+      const clrMap = getTextByPathList(slideMasterContent, ['p:sldMaster', 'p:clrMap', 'attrs'])
+      if (bgPr) {
+        const bgFillTyp = getFillType(bgPr)
+        if (bgFillTyp === 'SOLID_FILL') {
+          const sldFill = bgPr['a:solidFill']
+          const sldBgClr = getSolidFill(sldFill, clrMap, undefined, warpObj)
+          background = sldBgClr
+        }
+        else if (bgFillTyp === 'GRADIENT_FILL') {
+          const gradientFill = getBgGradientFill(bgPr, undefined, slideMasterContent, warpObj)
+          if (typeof gradientFill === 'string') {
+            background = gradientFill
+          }
+          else if (gradientFill) {
+            background = gradientFill
+            backgroundType = 'gradient'
+          }
+        }
+        else if (bgFillTyp === 'PIC_FILL') {
+          background = await getBgPicFill(bgPr, 'slideMasterBg', warpObj)
+          backgroundType = 'image'
+        }
+        else if (bgFillTyp === 'PATTERN_FILL') {
+          const patternFill = getPatternFill(bgPr, warpObj)
+          if (patternFill) {
+            background = patternFill
+            backgroundType = 'pattern'
+          }
+        }
+      }
+      else if (bgRef) {
+        const phClr = getSolidFill(bgRef, clrMap, undefined, warpObj)
+        const idx = Number(bgRef['attrs']['idx'])
+    
+        if (idx > 1000) {
+          const trueIdx = idx - 1000
+          const bgFillLst = warpObj['themeContent']['a:theme']['a:themeElements']['a:fmtScheme']['a:bgFillStyleLst']
+          const sortblAry = []
+          Object.keys(bgFillLst).forEach(key => {
+            const bgFillLstTyp = bgFillLst[key]
+            if (key !== 'attrs') {
+              if (bgFillLstTyp.constructor === Array) {
+                for (let i = 0; i < bgFillLstTyp.length; i++) {
+                  const obj = {}
+                  obj[key] = bgFillLstTyp[i]
+                  if (bgFillLstTyp[i]['attrs']) {
+                    obj['idex'] = bgFillLstTyp[i]['attrs']['order']
+                    obj['attrs'] = {
+                      'order': bgFillLstTyp[i]['attrs']['order']
+                    }
+                  }
+                  sortblAry.push(obj)
+                }
+              } 
+              else {
+                const obj = {}
+                obj[key] = bgFillLstTyp
+                if (bgFillLstTyp['attrs']) {
+                  obj['idex'] = bgFillLstTyp['attrs']['order']
+                  obj['attrs'] = {
+                    'order': bgFillLstTyp['attrs']['order']
+                  }
+                }
+                sortblAry.push(obj)
+              }
+            }
+          })
+          const sortByOrder = sortblAry.slice(0)
+          sortByOrder.sort((a, b) => a.idex - b.idex)
+          const bgFillLstIdx = sortByOrder[trueIdx - 1]
+          const bgFillTyp = getFillType(bgFillLstIdx)
+          if (bgFillTyp === 'SOLID_FILL') {
+            const sldFill = bgFillLstIdx['a:solidFill']
+            const sldBgClr = getSolidFill(sldFill, clrMapOvr, phClr, warpObj)
+            background = sldBgClr
+          }
+          else if (bgFillTyp === 'GRADIENT_FILL') {
+            const gradientFill = getBgGradientFill(bgFillLstIdx, phClr, slideMasterContent, warpObj)
+            if (typeof gradientFill === 'string') {
+              background = gradientFill
+            }
+            else if (gradientFill) {
+              background = gradientFill
+              backgroundType = 'gradient'
+            }
+          }
+          else if (bgFillTyp === 'PIC_FILL') {
+            background = await getBgPicFill(bgFillLstIdx, 'themeBg', warpObj)
+            backgroundType = 'image'
+          }
+          else if (bgFillTyp === 'PATTERN_FILL') {
+            const patternFill = getPatternFill(bgFillLstIdx, warpObj)
+            if (patternFill) {
+              background = patternFill
+              backgroundType = 'pattern'
+            }
+          }
+        }
+      }
+    }
+  }
+  return {
+    type: backgroundType,
+    value: background,
+  }
+}
+
+function getShapeFillCandidates(node, source, slideLayoutSpNode, slideMasterSpNode) {
+  const candidates = [{ node, source }]
+
+  if (slideLayoutSpNode) {
+    candidates.push({
+      node: slideLayoutSpNode,
+      source: 'slideLayoutBg',
+    })
+  }
+  if (slideMasterSpNode) {
+    candidates.push({
+      node: slideMasterSpNode,
+      source: 'slideMasterBg',
+    })
+  }
+
+  return candidates
+}
+
+async function resolveShapeFillFromNode(node, warpObj, source, groupHierarchy) {
+  if (!node) return { state: 'missing' }
+
+  const spPr = getTextByPathList(node, ['p:spPr'])
+  const fillType = spPr ? getFillType(spPr) : ''
+  let type = 'color'
+  let fillValue = ''
+  if (fillType === 'NO_FILL') {
+    return { state: 'none' }
+  }
+  else if (fillType === 'SOLID_FILL') {
+    const shpFill = spPr['a:solidFill']
+    fillValue = getSolidFill(shpFill, undefined, undefined, warpObj)
+    type = 'color'
+  }
+  else if (fillType === 'GRADIENT_FILL') {
+    const shpFill = spPr['a:gradFill']
+    fillValue = getGradientFill(shpFill, warpObj)
+    type = 'gradient'
+  }
+  else if (fillType === 'PIC_FILL') {
+    const shpFill = spPr['a:blipFill']
+    const picFill = await getPicFill(source, shpFill, warpObj)
+    const opacity = getPicFillOpacity(shpFill)
+    fillValue = {
+      ref: picFill.ref,
+      base64: picFill.base64,
+      blob: picFill.blob,
+      opacity,
+    }
+    type = 'image'
+  }
+  else if (fillType === 'PATTERN_FILL') {
+    const shpFill = spPr['a:pattFill']
+    fillValue = getPatternFill({ 'a:pattFill': shpFill }, warpObj)
+    type = 'pattern'
+  }
+  else if (fillType === 'GROUP_FILL') {
+    const groupFill = await findFillInGroupHierarchy(groupHierarchy, warpObj, source)
+    return groupFill ? { state: 'found', fill: groupFill } : { state: 'none' }
+  }
+  if (!fillValue && !fillType && getTextByPathList(node, ['attrs', 'useBgFill']) === '1') {
+    // ADITYANTA: <p:sp useBgFill="1"> is filled with the slide's background
+    // (a "cut-out" panel), not with its p:style fill
+    const bg = await getSlideBackgroundFill(warpObj)
+    return bg?.value ? { state: 'found', fill: { type: bg.type, value: bg.value } } : { state: 'none' }
+  }
+  if (!fillValue) {
+    // ADITYANTA: p:style/a:fillRef points into the theme's fill style lists
+    // (idx 1-999 -> fillStyleLst, 1001+ -> bgFillStyleLst, 0 -> no fill) and
+    // its colour replaces phClr inside that style.
+    const fillRef = getTextByPathList(node, ['p:style', 'a:fillRef'])
+    if (fillRef) {
+      const idx = Number(getTextByPathList(fillRef, ['attrs', 'idx']))
+      if (idx === 0) return { state: 'none' }
+      const phClr = getSolidFill(fillRef, undefined, undefined, warpObj)
+      const entry = idx > 1000
+        ? getThemeStyleEntry(warpObj, 'a:bgFillStyleLst', idx - 1000)
+        : getThemeStyleEntry(warpObj, 'a:fillStyleLst', idx)
+      if (entry?.tag === 'a:noFill') return { state: 'none' }
+      if (entry?.tag === 'a:gradFill') {
+        fillValue = getGradientFill(entry.node, warpObj, phClr)
+        type = 'gradient'
+      }
+      else if (entry?.tag === 'a:solidFill') {
+        fillValue = getSolidFill(entry.node, undefined, phClr, warpObj)
+        type = 'color'
+      }
+      else {
+        fillValue = phClr
+        type = 'color'
+      }
+    }
+  }
+  if (!fillValue) {
+    return { state: 'missing' }
+  }
+
+  return {
+    state: 'found',
+    fill: {
+      type,
+      value: fillValue,
+    }
+  }
+}
+
+export async function getShapeFill(node, warpObj, source, options = {}) {
+  const {
+    groupHierarchy = [],
+    slideLayoutSpNode,
+    slideMasterSpNode,
+  } = options
+
+  const candidates = getShapeFillCandidates(node, source, slideLayoutSpNode, slideMasterSpNode)
+  for (const candidate of candidates) {
+    const result = await resolveShapeFillFromNode(candidate.node, warpObj, candidate.source, groupHierarchy)
+
+    if (result.state === 'none') return null
+    if (result.state === 'found') return result.fill
+  }
+
+  return null
+}
+
+async function findFillInGroupHierarchy(groupHierarchy, warpObj, source) {
+  for (const groupNode of groupHierarchy) {
+    if (!groupNode || !groupNode['p:grpSpPr']) continue
+
+    const grpSpPr = groupNode['p:grpSpPr']
+    const fillType = getFillType(grpSpPr)
+
+    if (fillType === 'SOLID_FILL') {
+      const shpFill = grpSpPr['a:solidFill']
+      const fillValue = getSolidFill(shpFill, undefined, undefined, warpObj)
+      if (fillValue) {
+        return {
+          type: 'color',
+          value: fillValue,
+        }
+      }
+    }
+    else if (fillType === 'GRADIENT_FILL') {
+      const shpFill = grpSpPr['a:gradFill']
+      const fillValue = getGradientFill(shpFill, warpObj)
+      if (fillValue) {
+        return {
+          type: 'gradient',
+          value: fillValue,
+        }
+      }
+    }
+    else if (fillType === 'PIC_FILL') {
+      const shpFill = grpSpPr['a:blipFill']
+      const picFill = await getPicFill(source, shpFill, warpObj)
+      const opacity = getPicFillOpacity(shpFill)
+      if (picFill.ref || picFill.base64 || picFill.blob) {
+        return {
+          type: 'image',
+          value: {
+            ref: picFill.ref,
+            base64: picFill.base64,
+            blob: picFill.blob,
+            opacity,
+          },
+        }
+      }
+    }
+    else if (fillType === 'PATTERN_FILL') {
+      const shpFill = grpSpPr['a:pattFill']
+      const fillValue = getPatternFill({ 'a:pattFill': shpFill }, warpObj)
+      if (fillValue) {
+        return {
+          type: 'pattern',
+          value: fillValue,
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+export function getSolidFill(solidFill, clrMap, phClr, warpObj) {
+  if (!solidFill) return ''
+
+  let color = ''
+  let clrNode
+
+  if (solidFill['a:srgbClr']) {
+    clrNode = solidFill['a:srgbClr']
+    color = getTextByPathList(clrNode, ['attrs', 'val'])
+  } 
+  else if (solidFill['a:schemeClr']) {
+    clrNode = solidFill['a:schemeClr']
+    const schemeClr = 'a:' + getTextByPathList(clrNode, ['attrs', 'val'])
+    color = getSchemeColorFromTheme(schemeClr, warpObj, clrMap, phClr) || ''
+  }
+  else if (solidFill['a:scrgbClr']) {
+    clrNode = solidFill['a:scrgbClr']
+    const defBultColorVals = clrNode['attrs']
+    const red = (defBultColorVals['r'].indexOf('%') !== -1) ? defBultColorVals['r'].split('%').shift() : defBultColorVals['r']
+    const green = (defBultColorVals['g'].indexOf('%') !== -1) ? defBultColorVals['g'].split('%').shift() : defBultColorVals['g']
+    const blue = (defBultColorVals['b'].indexOf('%') !== -1) ? defBultColorVals['b'].split('%').shift() : defBultColorVals['b']
+    color = toHex(255 * (Number(red) / 100)) + toHex(255 * (Number(green) / 100)) + toHex(255 * (Number(blue) / 100))
+  } 
+  else if (solidFill['a:prstClr']) {
+    clrNode = solidFill['a:prstClr']
+    const prstClr = getTextByPathList(clrNode, ['attrs', 'val'])
+    color = getColorName2Hex(prstClr)
+  } 
+  else if (solidFill['a:hslClr']) {
+    clrNode = solidFill['a:hslClr']
+    const defBultColorVals = clrNode['attrs']
+    const hue = Number(defBultColorVals['hue']) / 100000
+    const sat = Number((defBultColorVals['sat'].indexOf('%') !== -1) ? defBultColorVals['sat'].split('%').shift() : defBultColorVals['sat']) / 100
+    const lum = Number((defBultColorVals['lum'].indexOf('%') !== -1) ? defBultColorVals['lum'].split('%').shift() : defBultColorVals['lum']) / 100
+    const hsl2rgb = hslToRgb(hue, sat, lum)
+    color = toHex(hsl2rgb.r) + toHex(hsl2rgb.g) + toHex(hsl2rgb.b)
+  } 
+  else if (solidFill['a:sysClr']) {
+    clrNode = solidFill['a:sysClr']
+    const sysClr = getTextByPathList(clrNode, ['attrs', 'lastClr'])
+    if (sysClr) color = sysClr
+  }
+
+  // ADITYANTA: apply colour transforms in document order (lumMod then lumOff,
+  // tint vs shade ordering, alphaMod/alphaOff...), as PowerPoint does.
+  let isAlpha = false
+  if (color && clrNode) {
+    for (const { tag, node: mod } of orderedChildren(clrNode)) {
+      const val = parseInt(getTextByPathList(mod, ['attrs', 'val'])) / 100000
+      switch (tag) {
+        case 'a:alpha':
+        case 'a:alphaMod':
+        case 'a:alphaOff': {
+          if (isNaN(val)) break
+          const c = tinycolor(color)
+          const a = tag === 'a:alpha' ? val : tag === 'a:alphaMod' ? c.getAlpha() * val : c.getAlpha() + val
+          c.setAlpha(Math.min(1, Math.max(0, a)))
+          color = c.toHex8()
+          isAlpha = true
+          break
+        }
+        case 'a:hueMod': if (!isNaN(val)) color = applyHueMod(color, val, isAlpha); break
+        case 'a:lumMod': if (!isNaN(val)) color = applyLumMod(color, val, isAlpha); break
+        case 'a:lumOff': if (!isNaN(val)) color = applyLumOff(color, val, isAlpha); break
+        case 'a:satMod': if (!isNaN(val)) color = applySatMod(color, val, isAlpha); break
+        case 'a:shade': if (!isNaN(val)) color = applyShade(color, val, isAlpha); break
+        case 'a:tint': if (!isNaN(val)) color = applyTint(color, val, isAlpha); break
+        case 'a:comp': {
+          const c = tinycolor(color).toHsl()
+          const out = tinycolor({ ...c, h: (c.h + 180) % 360 })
+          color = isAlpha ? out.toHex8() : out.toHex()
+          break
+        }
+        case 'a:inv': {
+          const { r, g, b, a } = tinycolor(color).toRgb()
+          const out = tinycolor({ r: 255 - r, g: 255 - g, b: 255 - b, a })
+          color = isAlpha ? out.toHex8() : out.toHex()
+          break
+        }
+        case 'a:gray': {
+          const { r, g, b, a } = tinycolor(color).toRgb()
+          const y = Math.round(0.3 * r + 0.59 * g + 0.11 * b)
+          const out = tinycolor({ r: y, g: y, b: y, a })
+          color = isAlpha ? out.toHex8() : out.toHex()
+          break
+        }
+        default: break
+      }
+    }
+  }
+
+  if (color && color.indexOf('#') === -1) color = '#' + color
+
+  return color
+}

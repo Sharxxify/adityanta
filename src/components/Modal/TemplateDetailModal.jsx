@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useApp } from '../../context/AppContext'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
-import { getLicenseDisplay, formatDownloads } from '../../utils/templateData'
+import { getLicenseDisplay, formatDownloads, isPaidLicense } from '../../utils/templateData'
 import { isPremiumUser, getRemainingFreeDownloads } from '../../utils/membership'
 import backgroundData from '../../utils/backgroundData.json'
+import { displayBackground, thumbBackground } from '../../utils/backgrounds'
 import logger from '../../utils/logger'
 
 const normalizeTopicForBackground = (topic) => {
@@ -79,7 +80,7 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
     setFavorite(isFavorite(template.template_id || template.id))
   }, [template, isFavorite])
 
-  const isPaid = template.license === 'PAID' || template.license === 'Premium'
+  const isPaid = isPaidLicense(template.license)
   const isUserPremium = isPremiumUser(user)
   const remainingDownloadsCount = getRemainingFreeDownloads(user, config?.free_downloads_limit ?? 0)
   const hasDownloadsRemaining = isUserPremium || remainingDownloadsCount > 0
@@ -129,11 +130,11 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
     }
   }
 
-  // Generate slides preview based on template frames count
-  const slideCount = Math.max(1, template.frames || 1)
+  // Preview cards: one per slide the server reports (#47 — no invented text)
+  const slideCount = Math.max(1, Number(template.frames) || 1)
   const slides = Array.from({ length: slideCount }, (_, i) => ({
     preview: i === 0 ? getDisplayPreview(template) : `Slide ${i + 1}`,
-    subtitle: i === 0 ? (template.description || 'A very brief description or a subtopic') : 'Additional content',
+    subtitle: i === 0 ? (template.sub_topic || '') : '',
   }))
 
   const topicPreviewBackground = pickTopicBackground(template)
@@ -164,15 +165,19 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
 
             {/* Meta Info */}
             <div className="space-y-2 mb-6 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500">Topic:</span>
-                <span className="font-medium text-gray-900">{template.topic}</span>
-              </div>
-              <div className="flex items-center gap-4">
+              {template.topic ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-500">Frames:</span>
-                  <span className="font-medium text-gray-900">{template.frames || 4}</span>
+                  <span className="text-gray-500">Topic:</span>
+                  <span className="font-medium text-gray-900">{template.topic}{template.sub_topic ? ` · ${template.sub_topic}` : ''}</span>
                 </div>
+              ) : null}
+              <div className="flex items-center gap-4">
+                {template.frames != null ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500">Slides:</span>
+                    <span className="font-medium text-gray-900">{template.frames}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-2">
                   <span className="text-gray-500">Downloads:</span>
                   <span className="font-medium text-gray-900">{formatDownloads(template.downloads)}</span>
@@ -243,13 +248,13 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
               </div>
             )}
 
-            {/* About Section */}
-            <div>
-              <h3 className="font-semibold text-gray-900 mb-2">About the template</h3>
-              <p className="text-sm text-gray-600 leading-relaxed">
-                {template.description || `A beautifully designed template for ${template.topic || 'educational'} presentations. Perfect for teachers and educators looking to create engaging slide content.`}
-              </p>
-            </div>
+            {/* About Section — the server's description only */}
+            {template.description ? (
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-2">About the template</h3>
+                <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-line">{template.description}</p>
+              </div>
+            ) : null}
 
             {/* Background Selection */}
             {availableBackgrounds.length > 0 && (
@@ -305,7 +310,7 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
                         title={`Background ${idx + 1}`}
                       >
                         <img
-                          src={bgPath}
+                          src={thumbBackground(bgPath)}
                           alt={`Background ${idx + 1}`}
                           className="w-full h-full object-cover"
                           onError={(e) => {
@@ -352,7 +357,7 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
               {selectedBackground ? (
                 <>
                   <img
-                    src={selectedBackground}
+                    src={displayBackground(selectedBackground)}
                     alt="Selected background"
                     className="absolute inset-0 w-full h-full object-cover"
                   />
@@ -378,7 +383,7 @@ const TemplateDetailModal = ({ template, onClose, onUpgrade }) => {
                 <>
                   {topicPreviewBackground && (
                     <img
-                      src={topicPreviewBackground}
+                      src={displayBackground(topicPreviewBackground)}
                       alt={`${template.topic || 'Generic'} preview background`}
                       className="absolute inset-0 w-full h-full object-cover"
                     />

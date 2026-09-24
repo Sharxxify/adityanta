@@ -209,7 +209,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
           e.preventDefault()
         }
       }}
-      className="h-12 bg-white border-b border-gray-200 flex items-center px-4 gap-2 relative z-40"
+      className="h-12 bg-white flex items-center px-4 gap-2 relative z-40"
     >
       {/* Font Family */}
       <div className="relative" ref={fontDropdownRef}>
@@ -243,7 +243,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
                 <button
                   key={font}
                   onClick={() => handleFontChange(font)}
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 ${currentFont === font ? 'text-primary font-medium bg-primary/5' : 'text-gray-700'}`}
+                  className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 ${currentFont === font ? 'text-gray-900 font-semibold bg-gray-100' : 'text-gray-700'}`}
                   style={{ fontFamily: font }}
                 >
                   {font}
@@ -280,7 +280,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
                 <button
                   key={size}
                   onClick={() => handleFontSizeSelect(size)}
-                  className={`w-full px-2 py-1 text-center text-sm hover:bg-gray-50 ${fontSize === size ? 'text-primary font-medium bg-primary/5' : 'text-gray-700'
+                  className={`w-full px-2 py-1 text-center text-sm hover:bg-gray-50 ${fontSize === size ? 'text-gray-900 font-semibold bg-gray-100' : 'text-gray-700'
                     }`}
                 >
                   {size}
@@ -306,7 +306,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       {/* Bold, Italic, Underline */}
       <button
         onClick={toggleBold}
-        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isBold ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isBold ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
           }`}
         title="Bold (Ctrl+B)"
       >
@@ -314,7 +314,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       </button>
       <button
         onClick={toggleItalic}
-        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isItalic ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isItalic ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
           }`}
         title="Italic (Ctrl+I)"
       >
@@ -322,7 +322,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       </button>
       <button
         onClick={toggleUnderline}
-        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isUnderline ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${isUnderline ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
           }`}
         title="Underline (Ctrl+U)"
       >
@@ -416,7 +416,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       <div className="flex items-center gap-0.5">
         <button
           onClick={() => handleAlignmentChange('left')}
-          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'left' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'left' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
             }`}
           title="Align left"
         >
@@ -429,7 +429,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
         </button>
         <button
           onClick={() => handleAlignmentChange('center')}
-          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'center' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'center' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
             }`}
           title="Align center"
         >
@@ -442,7 +442,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
         </button>
         <button
           onClick={() => handleAlignmentChange('right')}
-          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'right' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${alignment === 'right' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
             }`}
           title="Align right"
         >
@@ -461,7 +461,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       <div className="relative" ref={listDropdownRef}>
         <button
           onClick={() => setShowListDropdown(!showListDropdown)}
-          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${listType !== 'none' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${listType !== 'none' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
             }`}
           title="List options"
         >
@@ -479,7 +479,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100">List Style</div>
             <button
               onClick={() => handleListTypeChange('none')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'none' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'none' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -491,7 +491,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide border-t border-b border-gray-100 mt-1">Bullets</div>
             <button
               onClick={() => handleListTypeChange('bullet')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -506,7 +506,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-hollow')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-hollow' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-hollow' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -521,7 +521,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-square')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-square' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-square' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -536,7 +536,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-dash')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-dash' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-dash' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -551,7 +551,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-arrow')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-arrow' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-arrow' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -566,7 +566,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-check')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-check' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-check' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -581,7 +581,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('bullet-star')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-star' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'bullet-star' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -598,7 +598,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide border-t border-b border-gray-100 mt-1">Numbered</div>
             <button
               onClick={() => handleListTypeChange('numbered')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'numbered' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'numbered' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -613,7 +613,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('numbered-paren')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'numbered-paren' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'numbered-paren' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -628,7 +628,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('alpha')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'alpha' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'alpha' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -643,7 +643,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('alpha-lower')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'alpha-lower' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'alpha-lower' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -658,7 +658,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
             </button>
             <button
               onClick={() => handleListTypeChange('roman')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'roman' ? 'text-primary bg-primary/5' : 'text-gray-700'
+              className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-gray-50 ${listType === 'roman' ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                 }`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -681,7 +681,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       <div className="relative" ref={borderOptionsRef}>
         <button
           onClick={() => setShowBorderOptions(!showBorderOptions)}
-          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${borderWidth > 0 ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+          className={`w-8 h-8 flex items-center justify-center rounded transition-all ${borderWidth > 0 ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
             }`}
           title="Border"
         >
@@ -761,7 +761,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
           const newBg = current === 'transparent' ? '#f5f5f5' : 'transparent'
           onUpdate({ backgroundColor: newBg })
         }}
-        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${element?.backgroundColor && element.backgroundColor !== 'transparent' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100'
+        className={`w-8 h-8 flex items-center justify-center rounded transition-all ${element?.backgroundColor && element.backgroundColor !== 'transparent' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100'
           }`}
         title="Background fill"
       >
@@ -776,7 +776,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
       <div className="relative" ref={animationDropdownRef}>
         <button
           onClick={() => setShowAnimationDropdown(!showAnimationDropdown)}
-          className={`h-8 px-2 flex items-center gap-1.5 rounded transition-all text-sm ${currentAnimation !== 'none' ? 'bg-primary/10 text-primary ring-1 ring-primary' : 'hover:bg-gray-100 text-gray-600'
+          className={`h-8 px-2 flex items-center gap-1.5 rounded transition-all text-sm ${currentAnimation !== 'none' ? 'bg-[#dde4ee] text-gray-900 ring-1 ring-[#b4c0d3]' : 'hover:bg-gray-100 text-gray-600'
             }`}
           title="Animation"
         >
@@ -799,7 +799,7 @@ const TextToolbar = ({ element, onUpdate, onAnimationChange }) => {
                   }
                   setShowAnimationDropdown(false)
                 }}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 ${currentAnimation === anim.key ? 'text-primary bg-primary/5' : 'text-gray-700'
+                className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 ${currentAnimation === anim.key ? 'text-gray-900 font-medium bg-gray-100' : 'text-gray-700'
                   }`}
               >
                 {currentAnimation === anim.key && (

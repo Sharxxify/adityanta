@@ -1,9 +1,10 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { safeJSONParse, setToStorage } from '../utils/imageUtils'
-import { saveAutosave, clearAutosave } from '../utils/indexedDBHelper'
 import { API_CONFIG, AUTH_CONFIG } from '../config'
 import logger from '../utils/logger'
 import { buildPreziFrameTemplate } from '../utils/templateData'
+import { normalizeFrame, maxElementId } from '../components/Slide/model'
+import * as projectStore from '../utils/projectStore'
+import { displayBackground } from '../utils/backgrounds'
 
 const EditorContext = createContext(null)
 
@@ -58,143 +59,37 @@ export const SLIDE_TRANSITIONS = {
 
 const CANVAS_WIDTH = 1280
 const CANVAS_HEIGHT = 720
-const FIT_PADDING = 8
 
 const toFiniteNumber = (value, fallback = 0) => {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
 }
 
-const estimateTextLines = (text, fontSize, maxWidth) => {
-  const content = String(text || '')
-  if (!content.trim()) return 1
-
-  try {
-    if (typeof document !== 'undefined') {
-      const canvas = document.createElement('canvas')
-      const ctx = canvas.getContext('2d')
-      if (ctx) {
-        ctx.font = `${fontSize}px Inter, Arial, sans-serif`
-        return content.split('\n').reduce((total, line) => {
-          const words = line.split(/\s+/).filter(Boolean)
-          if (words.length === 0) return total + 1
-          let lineCount = 1
-          let current = words[0]
-          for (let i = 1; i < words.length; i += 1) {
-            const candidate = `${current} ${words[i]}`
-            if (ctx.measureText(candidate).width <= maxWidth) {
-              current = candidate
-            } else {
-              lineCount += 1
-              current = words[i]
-            }
-          }
-          return total + lineCount
-        }, 0)
-      }
-    }
-  } catch (_e) {
-    // no-op; fall back to approximation below
-  }
-
-  const avgCharWidth = Math.max(4, fontSize * 0.52)
-  const maxCharsPerLine = Math.max(8, Math.floor(maxWidth / avgCharWidth))
-  return content
-    .split('\n')
-    .reduce((sum, line) => sum + Math.max(1, Math.ceil((line.length || 1) / maxCharsPerLine)), 0)
-}
-
-const normalizeTextElement = (element, fitScale = 1) => {
-  if (element.type !== 'text') return element
-  const next = { ...element }
-  const baseFont = toFiniteNumber(next.fontSize, 16)
-  const fontSize = Math.max(8, Math.min(96, Math.round(baseFont * fitScale)))
-  next.fontSize = fontSize
-
-  const text = String(next.content || '')
-  if (text.trim().length > 0) {
-    const usableWidth = Math.max(40, toFiniteNumber(next.width, 120) - 12)
-    const lineCount = estimateTextLines(text, fontSize, usableWidth)
-    const neededHeight = Math.ceil(lineCount * fontSize * 1.35 + 12)
-    next.height = Math.max(toFiniteNumber(next.height, 50), neededHeight)
-  }
-
-  return next
-}
-
-const normalizeFrameGeometry = (frame) => {
-  const sourceElements = Array.isArray(frame?.elements) ? frame.elements : []
-  const positioned = sourceElements
-    .map((el) => ({
-      ...el,
-      x: toFiniteNumber(el?.x, 0),
-      y: toFiniteNumber(el?.y, 0),
-      width: Math.max(8, toFiniteNumber(el?.width, 120)),
-      height: Math.max(8, toFiniteNumber(el?.height, 50)),
-    }))
-
-  if (positioned.length === 0) {
-    return { ...frame, elements: [] }
-  }
-
-  const minX = Math.min(...positioned.map((el) => el.x))
-  const minY = Math.min(...positioned.map((el) => el.y))
-  const maxX = Math.max(...positioned.map((el) => el.x + el.width))
-  const maxY = Math.max(...positioned.map((el) => el.y + el.height))
-
-  const outOfBounds =
-    minX < 0 ||
-    minY < 0 ||
-    maxX > CANVAS_WIDTH ||
-    maxY > CANVAS_HEIGHT
-
-  const bboxWidth = Math.max(1, maxX - minX)
-  const bboxHeight = Math.max(1, maxY - minY)
-  const availableWidth = CANVAS_WIDTH - FIT_PADDING * 2
-  const availableHeight = CANVAS_HEIGHT - FIT_PADDING * 2
-  const fitScale = outOfBounds
-    ? Math.min(1, availableWidth / bboxWidth, availableHeight / bboxHeight)
-    : 1
-
-  const fitted = positioned.map((el) => {
-    const scaledX = (el.x - minX) * fitScale + FIT_PADDING
-    const scaledY = (el.y - minY) * fitScale + FIT_PADDING
-    const scaledWidth = Math.max(8, el.width * fitScale)
-    const scaledHeight = Math.max(8, el.height * fitScale)
-
-    const clampedWidth = Math.min(scaledWidth, CANVAS_WIDTH)
-    const clampedHeight = Math.min(scaledHeight, CANVAS_HEIGHT)
-
-    const normalizedElement = normalizeTextElement({
-      ...el,
-      x: Math.max(0, Math.min(scaledX, CANVAS_WIDTH - clampedWidth)),
-      y: Math.max(0, Math.min(scaledY, CANVAS_HEIGHT - clampedHeight)),
-      width: clampedWidth,
-      height: clampedHeight,
-    }, fitScale)
-
-    if (normalizedElement.y + normalizedElement.height > CANVAS_HEIGHT) {
-      normalizedElement.y = Math.max(0, CANVAS_HEIGHT - normalizedElement.height)
-      normalizedElement.height = Math.min(normalizedElement.height, CANVAS_HEIGHT)
-    }
-
-    return normalizedElement
-  })
-
-  return { ...frame, elements: fitted }
-}
-
+// Load-time normalisation. It only repairs data (missing ids, non-numeric
+// geometry, legacy text runs) — it never moves or rescales elements, so a
+// design with elements that intentionally bleed off the slide reopens exactly
+// as it was saved.
 const normalizeFramesForCanvas = (sourceFrames = []) => {
   if (!Array.isArray(sourceFrames)) return []
-  return sourceFrames.map((frame, index) => normalizeFrameGeometry({
-    ...frame,
-    id: frame?.id ?? index + 1,
-    title: frame?.title || `Slide ${index + 1}`,
-    preview: frame?.preview || frame?.title || `Slide ${index + 1}`,
-    backgroundColor: frame?.backgroundColor || '#ffffff',
-    notes: frame?.notes || '',
-    transition: frame?.transition || 'fade',
-  }))
+  return sourceFrames.map((frame, index) => {
+    const migrated = normalizeFrame(frame) || {}
+    return {
+      ...migrated,
+      id: migrated.id ?? index + 1,
+      title: migrated.title || `Slide ${index + 1}`,
+      preview: migrated.preview || migrated.title || `Slide ${index + 1}`,
+      backgroundColor: migrated.backgroundColor || '#ffffff',
+      notes: migrated.notes || '',
+      transition: migrated.transition || 'fade',
+      elements: (Array.isArray(migrated.elements) ? migrated.elements : []).filter(Boolean).map((el) => ({
+        ...el,
+        x: toFiniteNumber(el.x, 0),
+        y: toFiniteNumber(el.y, 0),
+        width: Math.max(1, toFiniteNumber(el.width, 120)),
+        height: Math.max(0, toFiniteNumber(el.height, 50)),
+      })),
+    }
+  })
 }
 
 // Create a blank frame with default text placeholders (like PowerPoint)
@@ -318,10 +213,6 @@ const createBlankProject = () => ({
     }]
   })
 
-  const AUTOSAVE_KEY = 'adityanta_autosave'
-  const AUTOSAVE_INTERVAL = 30000 // 30 seconds
-  const VERSION_HISTORY_KEY = 'adityanta_versions'
-  const MAX_VERSIONS = 20
 
   export const EditorProvider = ({ children }) => {
     const getInitialState = () => {
@@ -347,7 +238,9 @@ const createBlankProject = () => ({
     const [gridEnabled, setGridEnabled] = useState(false)
     const [gridSize, setGridSize] = useState(20)
     const [snapToGrid, setSnapToGrid] = useState(false)
-    const [editorBackground, setEditorBackground] = useState(undefined)
+    const [editorBackground, setEditorBackgroundState] = useState(undefined)
+    // built-in backgrounds always use their optimised full-screen copy (#58)
+    const setEditorBackground = useCallback((value) => setEditorBackgroundState(typeof value === 'string' ? displayBackground(value) : value), [])
 
     // Slide Master (global styling)
     const [slideMaster, setSlideMaster] = useState({
@@ -373,6 +266,19 @@ const createBlankProject = () => ({
   const [showSpeakerNotes, setShowSpeakerNotes] = useState(false)
 
   const elementCounterRef = useRef(100)
+
+  // Which project the editor state belongs to. Kept here (not in EditorPage)
+  // so it survives editor <-> presentation navigation.
+  //   routeId          id in the /editor/:id URL this state was loaded for
+  //   projectId        saved project id (null until the first save)
+  //   sourceTemplateId store template this project was copied from
+  //   baseline         state references at the last load/save (dirty check)
+  const sessionRef = useRef({ routeId: null, projectId: null, sourceTemplateId: null, topic: null, thumbnail: null, visibility: 'public', baseline: null })
+  const getSession = useCallback(() => sessionRef.current, [])
+  const updateSession = useCallback((patch) => {
+    sessionRef.current = { ...sessionRef.current, ...patch }
+    return sessionRef.current
+  }, [])
 
   // Refs for autosave and history
   const projectTitleRef = useRef(projectTitle)
@@ -423,8 +329,9 @@ const createBlankProject = () => ({
   // Get active frame
   const activeFrame = frames.find(f => f.id === activeFrameId) || frames[0]
 
-  // Get elements of active frame
-  const elements = activeFrame?.elements || []
+  // Get elements of active frame (stable reference while the frame is unchanged)
+  const activeElements = activeFrame?.elements
+  const elements = useMemo(() => activeElements || [], [activeElements])
 
   // Get selected element
   const selectedElement = selectedElementId
@@ -432,8 +339,12 @@ const createBlankProject = () => ({
     : null
 
   // Generate unique element ID
+  // Element ids must be unique across the deck. The counter is re-seeded from
+  // the highest id present, so ids never collide with elements that were
+  // saved in an earlier session or created by templates/imports.
   const generateElementId = useCallback(() => {
-    elementCounterRef.current += 1
+    const floor = maxElementId(framesRef.current)
+    elementCounterRef.current = Math.max(elementCounterRef.current, floor) + 1
     return elementCounterRef.current
   }, [])
 
@@ -583,25 +494,18 @@ const createBlankProject = () => ({
   }, [updateElements, selectedElementId, saveToHistory])
 
   // Duplicate element
+  // Ctrl+D: the copy is created up front (the old code made it inside a
+  // state updater, which runs later, so the copy was never selected) and is
+  // a deep copy, so editing its table cells or ink doesn't change the original
   const duplicateElement = useCallback((elementId) => {
+    const element = elements.find(el => el.id === elementId)
+    if (!element) return
     saveToHistory()
-    let createdId = null
-    updateElements(prev => {
-      const element = prev.find(el => el.id === elementId)
-      if (!element) return prev
-      createdId = generateElementId()
-      const newElement = {
-        ...element,
-        id: createdId,
-        x: element.x + 20,
-        y: element.y + 20
-      }
-      return [...prev, newElement]
-    })
-    if (createdId) {
-      setSelectedElementId(createdId)
-    }
-  }, [updateElements, generateElementId, saveToHistory])
+    const createdId = generateElementId()
+    const copy = { ...JSON.parse(JSON.stringify(element)), id: createdId, x: (element.x || 0) + 20, y: (element.y || 0) + 20 }
+    updateElements(prev => [...prev, copy])
+    setSelectedElementId(createdId)
+  }, [elements, updateElements, generateElementId, saveToHistory])
 
   // Copy element to clipboard
   const copyElement = useCallback((elementId) => {
@@ -676,7 +580,9 @@ const createBlankProject = () => ({
   // exact canvas position. EditorPage uses this to find a non-overlapping
   // adjacent slot before calling. When omitted, the duplicate falls back to
   // its old behavior (inheriting source's layout, which may overlap).
-  const duplicateFrame = useCallback((frameId, layout = null) => {
+  // `pinned` ({ frameId: layout }): positions to fix for slides that follow
+  // the automatic layout, so inserting the copy doesn't move them.
+  const duplicateFrame = useCallback((frameId, layout = null, pinned = null) => {
     saveToHistory()
     const frame = frames.find(f => f.id === frameId)
     if (frame) {
@@ -694,10 +600,12 @@ const createBlankProject = () => ({
       if (layout) {
         newFrame.layout = layout
       }
+      if (!layout && !frame.layout && pinned?.[frame.id]) newFrame.layout = pinned[frame.id]
       const index = frames.findIndex(f => f.id === frameId)
-      const newFrames = [...frames]
+      const newFrames = frames.map(f => (!f.layout && pinned?.[f.id] ? { ...f, layout: pinned[f.id] } : f))
       newFrames.splice(index + 1, 0, newFrame)
       setFrames(newFrames)
+      setActiveFrameId(newId)
     }
   }, [frames, generateElementId, saveToHistory])
 
@@ -771,33 +679,35 @@ const createBlankProject = () => ({
     setFrames(blank.frames)
     setActiveFrameId(1)
     setSelectedElementId(null)
-    setHistory([])
-    setHistoryIndex(-1)
+    historyRef.current = [JSON.stringify(blank.frames)]
+    historyIndexRef.current = 0
+    setHistory(historyRef.current)
+    setHistoryIndex(0)
     setIsBlankProject(true)
-    // Clear autosave (both localStorage and IndexedDB for safety)
-    localStorage.removeItem(AUTOSAVE_KEY)
-    clearAutosave()
-  }, [])
+    setEditorBackground(undefined)
+    framesRef.current = blank.frames
+    sessionRef.current = { routeId: 'new', projectId: null, sourceTemplateId: null, topic: null, thumbnail: null, visibility: 'public', baseline: null }
+    setVersionHistory([])
+  }, [setEditorBackground])
 
   // Load template into editor (from local data)
   const loadTemplate = useCallback((templateData) => {
     if (templateData && templateData.frames) {
       const normalizedFrames = normalizeFramesForCanvas(templateData.frames)
-      if (normalizedFrames.length === 0) return
-      // Clear autosave first so old edits don't persist
-      localStorage.removeItem(AUTOSAVE_KEY)
-      clearAutosave()
+      if (normalizedFrames.length === 0) return null
       setProjectTitle(templateData.title || 'Untitled Project')
       // Backwards-compat: templates saved before the Header feature won't have
       // a `header` field — fall back to the default placeholder.
       // Backwards-compat: bump any saved header with fontSize < 64 up to 64
       // so old projects look like new "heading" defaults.
-      setHeader((() => {
-        const h = templateData.header || { ...DEFAULT_HEADER }
+      const loadedHeader = (() => {
+        const h = { ...(templateData.header || DEFAULT_HEADER) }
         if (typeof h.fontSize === 'number' && h.fontSize < 64) h.fontSize = 64
         return h
-      })())
+      })()
+      setHeader(loadedHeader)
       setFrames(normalizedFrames)
+      framesRef.current = normalizedFrames
       setActiveFrameId(normalizedFrames[0]?.id || 1)
       setSelectedElementId(null)
       historyRef.current = [JSON.stringify(normalizedFrames)]
@@ -805,7 +715,10 @@ const createBlankProject = () => ({
       setHistory(historyRef.current)
       setHistoryIndex(0)
       setIsBlankProject(false)
+      // the exact state objects now in the editor (used as the autosave baseline)
+      return { frames: normalizedFrames, header: loadedHeader, title: templateData.title || 'Untitled Project' }
     }
+    return null
   }, [])
 
   // Load template from backend API
@@ -868,7 +781,7 @@ const createBlankProject = () => ({
       setProjectTitle(apiData.title || 'Loaded Template')
       // Header from API if present, else default placeholder.
       setHeader((() => {
-        const h = apiData.header || { ...DEFAULT_HEADER }
+        const h = { ...(apiData.header || DEFAULT_HEADER) }
         if (typeof h.fontSize === 'number' && h.fontSize < 64) h.fontSize = 64
         return h
       })())
@@ -880,10 +793,6 @@ const createBlankProject = () => ({
       setHistory(historyRef.current)
       setHistoryIndex(0)
       setIsBlankProject(false)
-
-      // Clear autosave since we loaded a new template
-      localStorage.removeItem(AUTOSAVE_KEY)
-      clearAutosave()
 
       return { success: true, template: apiData }
     } catch (error) {
@@ -898,37 +807,12 @@ const createBlankProject = () => ({
       title: projectTitle,
       header,
       frames,
+      // share links show the project background too
+      editorBackground: editorBackground ?? null,
       createdAt: new Date().toISOString(),
       version: '1.0'
     }
-  }, [projectTitle, header, frames])
-
-  // Manual save
-  const saveProject = useCallback(async () => {
-    try {
-      const data = {
-        title: projectTitle,
-        header,
-        frames,
-        savedAt: new Date().toISOString(),
-      }
-      // Use IndexedDB for manual save to avoid quota issues
-      const success = await saveAutosave(data)
-      if (success) {
-        setLastSaved(new Date())
-      }
-      return success
-    } catch (e) {
-      logger.error('Save failed:', e)
-      return false
-    }
-  }, [projectTitle, header, frames])
-
-  // Clear autosave
-  const clearAutosaveFromContext = useCallback(() => {
-    localStorage.removeItem(AUTOSAVE_KEY)
-    clearAutosave()
-  }, [])
+  }, [projectTitle, header, frames, editorBackground])
 
   // Add specific element types
   const addTextElement = useCallback((content = 'Click to edit text') => {
@@ -1085,6 +969,11 @@ const createBlankProject = () => ({
       width: 400,
       height: 200,
       data: Array(rows).fill(null).map(() => Array(cols).fill('')),
+      // #62 — clearly visible grid by default (was a 1px light grey line)
+      borderWidth: 2,
+      borderColor: '#374151',
+      borderStyle: 'solid',
+      headerRow: true,
       animation: 'none',
       animationDelay: 0,
     })
@@ -1201,55 +1090,60 @@ const createBlankProject = () => ({
   }, [pushToHistory, generateElementId])
 
   // Update element animation
-  const updateElementAnimation = useCallback((elementId, animation, delay = 0) => {
-    updateElement(elementId, { animation, animationDelay: delay })
+  // Changing the effect or its speed keeps the element's delay (it used to
+  // reset to 0); pass `delay` to change the delay itself.
+  const updateElementAnimation = useCallback((elementId, animation, delay) => {
+    updateElement(elementId, delay === undefined ? { animation } : { animation, animationDelay: delay })
   }, [updateElement])
 
-  // Version History Functions
-  const saveVersion = useCallback((versionName = '') => {
-    const version = {
-      id: Date.now(),
-      name: versionName || `Version ${versionHistory.length + 1}`,
-      timestamp: new Date().toISOString(),
-      data: {
-        title: projectTitle,
-        frames: JSON.parse(JSON.stringify(frames)),
-      }
-    }
-    const newHistory = [...versionHistory, version].slice(-MAX_VERSIONS)
-    setVersionHistory(newHistory)
-    // Use safe storage to handle quota errors
-    if (!setToStorage(VERSION_HISTORY_KEY, newHistory)) {
-      logger.warn('Version history storage quota may be exceeded - consider clearing old versions')
-    }
-    return version
-  }, [projectTitle, frames, versionHistory])
-
-  const loadVersion = useCallback((versionId) => {
-    const version = versionHistory.find(v => v.id === versionId)
-    if (version) {
-      setProjectTitle(version.data.title)
-      setFrames(version.data.frames)
-      setActiveFrameId(version.data.frames[0]?.id || 1)
-      setSelectedElementId(null)
-      return true
-    }
-    return false
-  }, [versionHistory])
-
-  const deleteVersion = useCallback((versionId) => {
-    const newHistory = versionHistory.filter(v => v.id !== versionId)
-    setVersionHistory(newHistory)
-    setToStorage(VERSION_HISTORY_KEY, newHistory)
-  }, [versionHistory])
-
-  // Load version history on mount using safe JSON parsing
-  useEffect(() => {
-    const saved = safeJSONParse(localStorage.getItem(VERSION_HISTORY_KEY), [])
-    if (Array.isArray(saved)) {
-      setVersionHistory(saved)
+  // Version history — stored per project in IndexedDB (utils/projectStore)
+  const refreshVersions = useCallback(async () => {
+    const id = sessionRef.current.projectId
+    if (!id) { setVersionHistory([]); return [] }
+    try {
+      const list = await projectStore.listVersions(id)
+      if (sessionRef.current.projectId === id) setVersionHistory(list)
+      return list
+    } catch (e) {
+      logger.error('Could not read version history', e)
+      return []
     }
   }, [])
+
+  /** Snapshot the current state. Needs a saved project (returns null otherwise). */
+  const saveVersion = useCallback(async (versionName = '', { auto = false, snapshot = null } = {}) => {
+    const id = sessionRef.current.projectId
+    if (!id) return null
+    const data = snapshot || { title: projectTitleRef.current, header, frames: framesRef.current, editorBgImage: editorBackground }
+    const version = await projectStore.saveVersion(id, { name: versionName, auto, ...data })
+    refreshVersions()
+    return version
+  }, [header, editorBackground, refreshVersions])
+
+  /** Restore a version into the editor (the restore itself can be undone) */
+  const loadVersion = useCallback(async (versionId) => {
+    const v = await projectStore.loadVersion(versionId)
+    if (!v?.snapshot?.frames?.length) return false
+    const snap = v.snapshot
+    const restored = normalizeFramesForCanvas(snap.frames)
+    historyRef.current = [...historyRef.current.slice(0, historyIndexRef.current + 1), JSON.stringify(restored)].slice(-50)
+    historyIndexRef.current = historyRef.current.length - 1
+    setHistory(historyRef.current)
+    setHistoryIndex(historyIndexRef.current)
+    if (snap.title) setProjectTitle(snap.title)
+    if (snap.header) setHeader(snap.header)
+    if (snap.editorBgImage !== undefined) setEditorBackground(snap.editorBgImage ?? undefined)
+    setFrames(restored)
+    framesRef.current = restored
+    setActiveFrameId(restored[0]?.id || 1)
+    setSelectedElementId(null)
+    return true
+  }, [setEditorBackground])
+
+  const deleteVersion = useCallback(async (versionId) => {
+    await projectStore.deleteVersion(versionId)
+    refreshVersions()
+  }, [refreshVersions])
 
   // Slide Master Functions
   const updateSlideMaster = useCallback((updates) => {
@@ -1336,9 +1230,10 @@ const createBlankProject = () => ({
     loadTemplate,
     loadTemplateFromAPI, // Load PPT template from backend
     createNewProject,
-    saveProject,
-    clearAutosave: clearAutosaveFromContext,
     lastSaved,
+    // Project session (which project this editor state belongs to)
+    getSession,
+    updateSession,
     isBlankProject,
     // Frames
     frames,
@@ -1408,6 +1303,7 @@ const createBlankProject = () => ({
     updateElementAnimation,
     // Version History
     versionHistory,
+    refreshVersions,
     saveVersion,
     loadVersion,
     deleteVersion,

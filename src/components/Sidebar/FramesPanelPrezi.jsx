@@ -1,10 +1,14 @@
 import { memo, useMemo, useState, useRef, useEffect } from 'react'
 import { PREZI_FRAME_TEMPLATES } from '../../utils/templateData'
+import SlideView from '../Slide/SlideView'
+import SlideThumbnail, { useElementWidth } from '../Slide/SlideThumbnail'
 
-// Mini-map: shows every frame as a small rectangle in its real canvas
-// position so the user can see the overall shape of the project. The
-// active frame is highlighted in green.
-const MiniMapPreview = memo(({ frameLayouts = [], activeFrameId, editorBackground }) => {
+// Mini-map: every slide drawn (with its real content) at its canvas position,
+// so the Overview tile shows the true shape of the project. Active = green.
+const MiniMapPreview = memo(({ frames = [], frameLayouts = [], activeFrameId, editorBackground }) => {
+  const [ref, width] = useElementWidth()
+  const height = (width * 9) / 16
+
   const bounds = useMemo(() => {
     if (!frameLayouts || frameLayouts.length === 0) return null
     const minX = Math.min(...frameLayouts.map((f) => f.x))
@@ -14,256 +18,62 @@ const MiniMapPreview = memo(({ frameLayouts = [], activeFrameId, editorBackgroun
     const w = maxX - minX
     const h = maxY - minY
     if (w <= 0 || h <= 0) return null
-    // Pad a bit so frames don't sit flush against the thumbnail edges.
     const padX = w * 0.04
     const padY = h * 0.04
     return { minX: minX - padX, minY: minY - padY, w: w + padX * 2, h: h + padY * 2 }
   }, [frameLayouts])
 
   const bgStyle = editorBackground
-    ? {
-        backgroundImage: `url(${editorBackground})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }
+    ? { backgroundImage: `url("${editorBackground}")`, backgroundSize: 'cover', backgroundPosition: 'center' }
     : { backgroundColor: '#f5f5f2' }
+
+  const s = bounds && width ? Math.min(width / bounds.w, height / bounds.h) : 0
+  const ox = bounds ? (width - bounds.w * s) / 2 : 0
+  const oy = bounds ? (height - bounds.h * s) / 2 : 0
+  const frameById = useMemo(() => new Map(frames.map((f) => [f.id, f])), [frames])
 
   return (
     <div
+      ref={ref}
       className="relative w-full aspect-[16/9] overflow-hidden rounded-md border border-gray-200 pointer-events-none select-none"
       style={bgStyle}
     >
-      {bounds && (
-        <svg
-          viewBox={`${bounds.minX} ${bounds.minY} ${bounds.w} ${bounds.h}`}
-          preserveAspectRatio="xMidYMid meet"
-          className="absolute inset-0 w-full h-full"
-        >
-          {frameLayouts.map((f) => {
-            const isActive = f.id === activeFrameId
-            const strokeW = Math.max(2, bounds.w / 220)
-            return (
-              <rect
-                key={f.id}
-                x={f.x}
-                y={f.y}
-                width={f.width}
-                height={f.height}
-                fill={isActive ? 'rgba(34, 197, 94, 0.55)' : 'rgba(255, 255, 255, 0.85)'}
-                stroke={isActive ? '#15803d' : '#94a3b8'}
-                strokeWidth={strokeW}
-                rx={Math.max(2, bounds.w / 200)}
-              />
-            )
-          })}
-        </svg>
-      )}
+      {bounds && s > 0 && frameLayouts.map((f) => {
+        const isActive = f.id === activeFrameId
+        const w = f.width * s
+        const h = f.height * s
+        return (
+          <div
+            key={f.id}
+            className="absolute overflow-hidden"
+            style={{
+              left: ox + (f.x - bounds.minX) * s,
+              top: oy + (f.y - bounds.minY) * s,
+              width: w,
+              height: h,
+              borderRadius: 2,
+              boxShadow: isActive ? '0 0 0 2px #16a34a' : '0 0 0 1px rgba(148,163,184,0.9)',
+            }}
+          >
+            <SlideView
+              frame={frameById.get(f.id)}
+              width={w}
+              height={h}
+              editorBackground={editorBackground}
+              mode="export"
+            />
+          </div>
+        )
+      })}
     </div>
   )
 })
 MiniMapPreview.displayName = 'MiniMapPreview'
 
-const renderMiniElement = (el) => {
-  const commonStyle = {
-    position: 'absolute',
-    left: `${el.x}px`,
-    top: `${el.y}px`,
-    width: `${el.width || 100}px`,
-    height: `${el.height || 60}px`,
-    opacity: (el.opacity ?? 100) / 100,
-    transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-  }
-
-  switch (el.type) {
-    case 'text':
-      return (
-        <div
-          key={el.id}
-          style={{
-            ...commonStyle,
-            fontSize: `${el.fontSize || 16}px`,
-            fontWeight: el.fontWeight || 'normal',
-            fontFamily: el.fontFamily || 'Inter',
-            fontStyle: el.fontStyle || 'normal',
-            textDecoration: el.textDecoration || 'none',
-            textAlign: el.textAlign || 'left',
-            color: el.color || '#111827',
-            padding: '8px',
-            wordWrap: 'break-word',
-            lineHeight: 1.5,
-            whiteSpace: 'pre-wrap',
-            overflow: 'hidden',
-            userSelect: 'none',
-          }}
-          dangerouslySetInnerHTML={{ __html: el.content || '' }}
-        />
-      )
-
-    case 'shape':
-      const fill = el.fill || 'transparent'
-      const border = el.strokeWidth
-        ? `${el.strokeWidth}px ${el.borderStyle || 'solid'} ${el.strokeColor || '#333'}`
-        : 'none'
-      
-      let shapeNode = null
-      const shapeType = el.shapeType || 'rectangle'
-      
-      if (shapeType === 'circle' || shapeType === 'oval') {
-        shapeNode = (
-          <div
-            className="w-full h-full rounded-full"
-            style={{ backgroundColor: fill, border }}
-          />
-        )
-      } else if (shapeType === 'roundedRectangle') {
-        shapeNode = (
-          <div
-            className="w-full h-full"
-            style={{ backgroundColor: fill, border, borderRadius: `${el.borderRadius ?? 16}px` }}
-          />
-        )
-      } else if (shapeType === 'triangle') {
-        shapeNode = (
-          <svg className="w-full h-full" viewBox="0 0 200 150" preserveAspectRatio="none">
-            <polygon points="100,0 0,150 200,150" fill={fill} stroke={el.strokeColor} strokeWidth={el.strokeWidth || 0} />
-          </svg>
-        )
-      } else if (shapeType === 'diamond') {
-        shapeNode = (
-          <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <polygon points="50,0 100,50 50,100 0,50" fill={fill} stroke={el.strokeColor} strokeWidth={el.strokeWidth || 0} />
-          </svg>
-        )
-      } else {
-        shapeNode = (
-          <div
-            className="w-full h-full"
-            style={{ backgroundColor: fill, border }}
-          />
-        )
-      }
-
-      return (
-        <div key={el.id} style={commonStyle}>
-          <div className="relative w-full h-full">
-            {shapeNode}
-            {el.content && (
-              <div
-                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                style={{
-                  fontSize: `${el.fontSize || 16}px`,
-                  fontWeight: el.fontWeight || 'normal',
-                  fontFamily: el.fontFamily || 'Inter',
-                  fontStyle: el.fontStyle || 'normal',
-                  textDecoration: el.textDecoration || 'none',
-                  textAlign: el.textAlign || 'center',
-                  color: el.color || '#111827',
-                  padding: '8px',
-                  overflow: 'hidden',
-                  wordWrap: 'break-word',
-                }}
-                dangerouslySetInnerHTML={{ __html: el.content }}
-              />
-            )}
-          </div>
-        </div>
-      )
-
-    case 'image':
-      return (
-        <div key={el.id} style={commonStyle}>
-          <img
-            src={el.src}
-            alt="thumbnail-preview"
-            className="w-full h-full object-contain rounded"
-            style={{
-              transform: `${el.flipH ? 'scaleX(-1)' : ''} ${el.flipV ? 'scaleY(-1)' : ''}`.trim() || undefined,
-              borderRadius: typeof el.borderRadius === 'number' ? `${el.borderRadius}px` : (el.borderRadius || undefined)
-            }}
-          />
-        </div>
-      )
-
-    case 'icon':
-      const iconSize = Math.min(el.width || 50, el.height || 50) * 0.8
-      const iconColor = el.color || '#2E7D32'
-      return (
-        <div key={el.id} style={{ ...commonStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-          </svg>
-        </div>
-      )
-
-    default:
-      return (
-        <div
-          key={el.id}
-          className="rounded-sm bg-gray-200/80 border border-gray-300"
-          style={{ ...commonStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-        >
-          <span className="text-[10px] font-bold text-gray-500 uppercase">{el.type}</span>
-        </div>
-      )
-  }
-}
-
-const MiniCanvasPreview = memo(({ frame, editorBackground = null }) => {
-  const containerRef = useRef(null)
-  const [scale, setScale] = useState(0.2)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const updateScale = () => {
-      const rect = el.getBoundingClientRect()
-      if (rect.width > 0) {
-        setScale(rect.width / 1280)
-      }
-    }
-    updateScale()
-    const observer = new ResizeObserver(updateScale)
-    observer.observe(el)
-    window.addEventListener('resize', updateScale)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', updateScale)
-    }
-  }, [])
-
-  const elements = frame?.elements || []
-
-  const bgStyle = frame?.backgroundImage
-    ? { backgroundImage: `url(${frame.backgroundImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-    : (frame?.backgroundColor && frame?.backgroundColor !== 'transparent'
-        ? { backgroundColor: frame.backgroundColor }
-        : (editorBackground
-            ? { backgroundImage: `url(${editorBackground})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' }
-            : { backgroundColor: '#ffffff' }))
-
-  return (
-    <div
-      ref={containerRef}
-      className="relative w-full aspect-[16/9] overflow-hidden rounded-md bg-white border border-gray-200 pointer-events-none select-none"
-    >
-      <div
-        className="absolute left-0 top-0 origin-top-left"
-        style={{
-          width: '1280px',
-          height: '720px',
-          transform: `scale(${scale})`,
-          ...bgStyle
-        }}
-      >
-        {elements.map((el) => {
-          if (!el || el.isPlaceholder) return null
-          if (el.type === 'shape' && el.fill === '#f3f4f6') return null
-          return renderMiniElement(el)
-        })}
-      </div>
-    </div>
-  )
-})
+// Slide thumbnail: the real slide, drawn by the shared renderer
+const MiniCanvasPreview = memo(({ frame, editorBackground = null }) => (
+  <SlideThumbnail frame={frame} editorBackground={editorBackground} className="rounded-md bg-white border border-gray-200" />
+))
 
 MiniCanvasPreview.displayName = 'MiniCanvasPreview'
 
@@ -422,6 +232,7 @@ const FramesPanelPrezi = ({
           className="w-full text-left rounded-xl bg-gray-50 p-2 border-2 border-transparent hover:border-gray-200 transition-all"
         >
           <MiniMapPreview
+            frames={frames}
             frameLayouts={frameLayouts}
             activeFrameId={activeFrame}
             editorBackground={editorBackground}
@@ -443,7 +254,9 @@ const FramesPanelPrezi = ({
               onDragOver={(e) => handleDragOver(e, index)}
               onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
-              onClick={() => setActiveFrame(frame.id, isOverviewMode ? 'overview' : 'frame')}
+              onClick={() => setActiveFrame(frame.id, isOverviewMode ? 'select' : 'frame')}
+              onDoubleClick={() => setActiveFrame(frame.id, 'open')}
+              title={isOverviewMode ? 'Click to select · double-click to open' : undefined}
               className={`group ${isOverviewMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} rounded-xl p-2 border-2 transition-all ${
                 isActive ? 'border-[#3dba4e] bg-green-50/50' : 'border-gray-200 hover:border-gray-300'
               } ${isDragTarget ? 'ring-2 ring-[#3dba4e] ring-offset-1 scale-[0.98]' : ''}`}
@@ -457,7 +270,7 @@ const FramesPanelPrezi = ({
                   {isOverviewMode && <div className="text-gray-300 text-[10px] leading-none select-none">⠿</div>}
                 </div>
 
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <div className="relative">
                     <MiniCanvasPreview frame={frame} editorBackground={editorBackground} />
                     <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-white/95 border border-gray-300 text-[11px] flex items-center justify-center">
@@ -467,8 +280,8 @@ const FramesPanelPrezi = ({
 
                   <button
                     className="mt-1.5 w-full flex items-center justify-between px-1 py-0.5 rounded hover:bg-green-50 transition-all"
-                    onClick={(e) => { e.stopPropagation(); setActiveFrame(frame.id, isOverviewMode ? 'overview' : 'frame') }}
-                    title={isOverviewMode ? "Select this frame" : "Click to zoom into this frame"}
+                    onClick={(e) => { e.stopPropagation(); setActiveFrame(frame.id, isOverviewMode ? 'select' : 'frame') }}
+                    title={isOverviewMode ? 'Select this slide (double-click to open it)' : 'Go to this slide'}
                   >
                     <p className="text-xs font-bold text-gray-700">{frame.title || `Slide ${slideNumber}`}</p>
                     {!isOverviewMode && <span className="text-green-600 text-sm font-bold">»</span>}

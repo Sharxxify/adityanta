@@ -373,9 +373,9 @@ export const formatDownloads = (count) => {
 }
 
 // Helper to get license display text
-export const getLicenseDisplay = (license) => {
-  return license === 'PAID' ? 'Premium' : 'Free'
-}
+export const isPaidLicense = (license) => /paid|premium|pro/i.test(`${license || ''}`)
+
+export const getLicenseDisplay = (license) => (isPaidLicense(license) ? 'Premium' : 'Free')
 
 // Local editor frame templates (Prezi-like) used by + Add frame picker
 export const PREZI_FRAME_TEMPLATES = [

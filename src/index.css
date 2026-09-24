@@ -826,4 +826,28 @@ input:focus, textarea:focus, select:focus {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
-}
+}
+/* ------------------------------------------------------------------------
+   Rich slide text — shared by the editor, presentation, thumbnails and
+   exports (see components/Slide/ElementView.jsx). Inline styles written by
+   the editor / PPTX importer override these defaults per paragraph & run.
+   ------------------------------------------------------------------------ */
+.slide-text {
+  font-kerning: normal;
+  text-rendering: geometricPrecision;
+}
+.slide-text ul,
+.slide-text ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+.slide-text ul { list-style: disc outside; }
+.slide-text ol { list-style: decimal outside; }
+.slide-text ul ul { list-style-type: circle; }
+.slide-text ul ul ul { list-style-type: square; }
+.slide-text li { margin: 0; }
+.slide-text a { color: inherit; text-decoration: underline; }
+.slide-text b,
+.slide-text strong { font-weight: 700; }
+.slide-text sub,
+.slide-text sup { line-height: 0; }

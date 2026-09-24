@@ -8,8 +8,8 @@ export const SNAKE_ORIGIN_X = 80
 export const SNAKE_ORIGIN_Y = 240
 
 // Singleton "project header" sits in canvas coords directly above the snake.
-// Editor + presentation read this; exports render the header inside each
-// slide instead (see slideRender.js).
+// Editor + presentation read this; exports turn it into an opening title
+// slide instead (see exportFrames.js).
 export const HEADER_LAYOUT = {
   x: 80,
   y: 80,

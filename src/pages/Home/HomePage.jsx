@@ -12,12 +12,14 @@ import Skeleton from '../../components/Skeleton/Skeleton'
 import EmptyState from '../../components/EmptyState/EmptyState'
 import TemplateDetailModal from '../../components/Modal/TemplateDetailModal'
 import UpgradePlanModal from '../../components/Modal/UpgradePlanModal'
-import { topics, licenses, sortOptions, formatDownloads, getLicenseDisplay, templates as mockTemplates } from '../../utils/templateData'
+import { topics, licenses, sortOptions, formatDownloads, getLicenseDisplay, isPaidLicense } from '../../utils/templateData'
 import { escapeRegex } from '../../utils/imageUtils'
 import { parsePPTX } from '../../utils/pptxImport'
+import { exportBackup, projectsFromImport, getStorageInfo } from '../../utils/projectStore'
 import { isPremiumUser, getRemainingFreeDownloads } from '../../utils/membership'
 import { userAPI } from '../../services/api'
 import backgroundData from '../../utils/backgroundData.json'
+import { thumbBackground } from '../../utils/backgrounds'
 
 const RECENT_TEMPLATES_KEY = 'adityanta_recent_templates'
 const FILTER_PREFS_KEY = 'adityanta_filter_prefs'
@@ -66,6 +68,17 @@ const normalizeSortLabel = (value) => {
   return DEFAULT_SORT_OPTION
 }
 
+// #45 — filters compare normalised values: API topics come as "Maths" or
+// "Mathematics", licences as FREE/PAID or Free/Premium, dates may be missing
+const topicKey = (topic) => `${normalizeTopicForBackground(topic)}`.toLowerCase()
+const licenseKey = (license) => (isPaidLicense(license) ? 'PAID' : 'FREE')
+const createdTime = (t) => {
+  const v = Date.parse(t?.created_at || t?.createdAt || '')
+  return Number.isFinite(v) ? v : 0
+}
+const textOf = (v) => `${v ?? ''}`.toLowerCase()
+const matchesQuery = (t, query) => [t.title, t.topic, t.sub_topic, t.description].some((v) => textOf(v).includes(query))
+
 const isUrlLike = (value) => typeof value === 'string' && /^(https?:\/\/|www\.)/i.test(value.trim())
 
 const normalizeTemplateImageUrl = (value) => {
@@ -92,7 +105,7 @@ const getTemplateFallbackBackground = (template) => {
 
   const seed = `${template?.template_id || template?.id || template?.title || ''}`
   const hash = [...seed].reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
-  return options[hash % options.length]
+  return thumbBackground(options[hash % options.length])
 }
 
 const getTemplatePreviewLabel = (template) => {
@@ -130,7 +143,7 @@ const shouldHideTemplate = (template) => {
 const HomePage = () => {
   const navigate = useNavigate()
   const { user, logout, refreshUser } = useAuth()
-  const { config, favorites, fetchFavorites, addFavorite, removeFavorite, isFavorite, userFiles, trashedItems, deleteUserFile, restoreUserFile, permanentlyDeleteFile, saveProject, templates: apiTemplates, storeTemplates: apiStoreTemplates, fetchTemplates, isLoadingTemplates, isLoadingStoreTemplates, serverStatus } = useApp()
+  const { config, favorites, fetchFavorites, addFavorite, removeFavorite, isFavorite, userFiles, trashedItems, deleteUserFile, restoreUserFile, permanentlyDeleteFile, saveProject, duplicateProject, templates: apiTemplates, storeTemplates: apiStoreTemplates, fetchTemplates, isLoadingTemplates, isLoadingStoreTemplates, serverStatus } = useApp()
   const { createNewProject } = useEditor()
   const toast = useToast()
 
@@ -143,7 +156,7 @@ const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedTopic, setSelectedTopic] = useState(savedFilters.topic || 'All')
   const [selectedLicense, setSelectedLicense] = useState(savedFilters.license || 'All')
-  const [selectedSort, setSelectedSort] = useState(savedFilters.sort || 'New -> Old')
+  const [selectedSort, setSelectedSort] = useState(() => normalizeSortLabel(savedFilters.sort || DEFAULT_SORT_OPTION))
   const [showTopicDropdown, setShowTopicDropdown] = useState(false)
   const [showLicenseDropdown, setShowLicenseDropdown] = useState(false)
   const [showSortDropdown, setShowSortDropdown] = useState(false)
@@ -156,11 +169,9 @@ const HomePage = () => {
   const [selectedStoreTopic, setSelectedStoreTopic] = useState('All')
   const [selectedStoreSubTopic, setSelectedStoreSubTopic] = useState(null)
 
-  const templates = useMemo(() => {
-    const filteredApiTemplates = (apiTemplates || []).filter((t) => !shouldHideTemplate(t))
-    if (filteredApiTemplates.length > 0) return filteredApiTemplates
-    return (mockTemplates || []).filter((t) => !shouldHideTemplate(t))
-  }, [apiTemplates])
+  // #47 — only what the server sends (the old code filled an empty or failed
+  // response with 28 built-in demo templates, so it looked like server data)
+  const templates = useMemo(() => (apiTemplates || []).filter((t) => !shouldHideTemplate(t)), [apiTemplates])
 
   const availableBackgrounds = useMemo(() => {
     const entries = Object.entries(backgroundData || {})
@@ -491,23 +502,18 @@ const navItems = [
 
   const filteredTemplates = useMemo(() => {
     let result = [...templates]
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter(t =>
-        t.title.toLowerCase().includes(query) ||
-        t.topic.toLowerCase().includes(query) ||
-        t.description?.toLowerCase().includes(query)
-      )
+    const query = searchQuery.trim().toLowerCase()
+    if (query) result = result.filter((t) => matchesQuery(t, query))
+    if (selectedTopic !== 'All') result = result.filter((t) => topicKey(t.topic) === topicKey(selectedTopic))
+    if (selectedLicense !== 'All') result = result.filter((t) => licenseKey(t.license) === licenseKey(selectedLicense))
+    switch (normalizeSortLabel(selectedSort)) {
+      case 'New to Old': result.sort((a, b) => createdTime(b) - createdTime(a)); break
+      case 'Old to New': result.sort((a, b) => createdTime(a) - createdTime(b)); break
+      case 'Most Popular': result.sort((a, b) => (Number(b.downloads) || 0) - (Number(a.downloads) || 0)); break
+      case 'Alphabetical': result.sort((a, b) => `${a.title || ''}`.localeCompare(`${b.title || ''}`, undefined, { sensitivity: 'base', numeric: true })); break
+      default: break
     }
-    if (selectedTopic !== 'All') result = result.filter(t => `${t.topic || ''}`.toLowerCase() === selectedTopic.toLowerCase())
-    if (selectedLicense !== 'All') result = result.filter(t => t.license === selectedLicense)
-    switch (selectedSort) {
-      case 'New -> Old': result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)); break
-      case 'Old -> New': result.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)); break
-      case 'Most Popular': result.sort((a, b) => b.downloads - a.downloads); break
-      case 'Alphabetical': result.sort((a, b) => a.title.localeCompare(b.title)); break
-    }
-   return result
+    return result
   }, [searchQuery, selectedTopic, selectedLicense, selectedSort, templates])
 
   // Store-tab data: list of store templates after light filtering, the topic
@@ -536,31 +542,17 @@ const navItems = [
       'Physical & Skill Subjects',
       'Generic',
     ]
-    // Only show pills that have at least one template (case-insensitive match).
-    const presentLower = new Set(
-      storeTemplatesVisible
-        .map((t) => `${t.topic || ''}`.trim().toLowerCase())
-        .filter(Boolean)
-    )
-    const present = canonical.filter((label) => presentLower.has(label.toLowerCase()))
-    return ['All', ...present]
+    // Only show pills that have at least one template ("Maths" counts for
+    // "Mathematics", "General" for "Generic", ...)
+    const present = new Set(storeTemplatesVisible.map((t) => topicKey(t.topic)))
+    return ['All', ...canonical.filter((label) => present.has(topicKey(label)))]
   }, [storeTemplatesVisible])
 
   const filteredStoreTemplates = useMemo(() => {
     let result = [...storeTemplatesVisible]
-    if (selectedStoreTopic !== 'All') {
-      result = result.filter(
-        (t) => `${t.topic || ''}`.trim().toLowerCase() === selectedStoreTopic.toLowerCase()
-      )
-    }
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter((t) =>
-        (t.title || '').toLowerCase().includes(query) ||
-        (t.topic || '').toLowerCase().includes(query) ||
-        (t.description || '').toLowerCase().includes(query)
-      )
-    }
+    if (selectedStoreTopic !== 'All') result = result.filter((t) => topicKey(t.topic) === topicKey(selectedStoreTopic))
+    const query = searchQuery.trim().toLowerCase()
+    if (query) result = result.filter((t) => matchesQuery(t, query))
     return result
   }, [storeTemplatesVisible, selectedStoreTopic, searchQuery])
 
@@ -669,6 +661,79 @@ const navItems = [
     setSelectedTrashItems(new Set())
   }
 
+  // One import path for every upload button: .pptx (PowerPoint) or .json
+  // (Adityanta export). Parsing happens entirely in the browser.
+  const importFile = async (file) => {
+    if (!file || isUploading) return
+    const name = file.name.toLowerCase()
+    const ext = name.split('.').pop()
+    if (ext === 'ppt') {
+      toast.error('Old .ppt files are not supported. Open it in PowerPoint and "Save As" .pptx first.')
+      return
+    }
+    if (ext !== 'pptx' && ext !== 'json') {
+      toast.error('Please upload a PowerPoint (.pptx) file')
+      return
+    }
+    if (file.size > 200 * 1024 * 1024) {
+      toast.error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 200MB.`)
+      return
+    }
+    setIsUploading(true)
+    try {
+      let title
+      let frames
+      let extra = {}
+      let warnings = []
+      if (ext === 'json') {
+        const { importFromJSON } = await import('../../utils/exportUtils')
+        const projects = projectsFromImport(await importFromJSON(file))
+        if (projects.length === 0) throw new Error('This file has no slides')
+        if (projects.length > 1) {
+          // A backup of several projects: restore them all as new copies
+          for (const p of projects) {
+            await saveProject({ ...p, id: undefined, isUserUpload: true, uploadedAt: new Date().toISOString() })
+          }
+          toast.success(`Restored ${projects.length} projects from the backup`)
+          setActiveTab('files')
+          return
+        }
+        const { frames: pf, title: pt, ...rest } = projects[0]
+        extra = rest
+        title = pt
+        frames = pf
+      } else {
+        const parsed = await parsePPTX(file)
+        title = parsed.title
+        frames = parsed.frames
+        warnings = parsed.warnings || []
+      }
+      if (!Array.isArray(frames) || frames.length === 0) throw new Error('No slides found in this file')
+      if (frames.length > 500) {
+        toast.warning('Only the first 500 slides were imported.')
+        frames = frames.slice(0, 500)
+      }
+      const projectData = {
+        thumbnail: 'from-green-400 to-emerald-500',
+        ...extra,
+        id: `uploaded_${Date.now()}`,
+        title: (title || file.name.replace(/\.[^.]+$/, '')).substring(0, 100),
+        frames,
+        isUserUpload: true,
+        uploadedAt: new Date().toISOString(),
+      }
+      const saved = await saveProject(projectData)
+      toast.success(`Imported "${projectData.title}" (${frames.length} slide${frames.length === 1 ? '' : 's'})`)
+      if (warnings.length) toast.warning(warnings.slice(0, 3).join(' '), 7000)
+      navigate(`/editor/${saved.id}`)
+    } catch (error) {
+      logger.error('Import failed:', error)
+      toast.error(`Could not import "${file.name}": ${error?.message || 'the file looks damaged or is not a PowerPoint file'}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
   const handleCreateNew = () => {
     setShowNewBgModal(true)
   }
@@ -730,17 +795,38 @@ const navItems = [
 
   const handleDeleteFile = (fileId) => { deleteUserFile(fileId); toast.success('File moved to trash') }
 
-  const handleDuplicateFile = (file) => {
-    const duplicatedFile = {
-      ...file,
-      id: Date.now(),
-      title: `${file.title} (Copy)`,
-      created: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-      updatedAt: new Date().toISOString()
+  const handleDuplicateFile = async (file) => {
+    try {
+      await duplicateProject(file.id)
+      toast.success('Project duplicated')
+    } catch (e) {
+      toast.error(e?.message || 'Could not duplicate the project')
     }
-    saveProject(duplicatedFile)
-    toast.success('Project duplicated successfully')
   }
+
+  // Backups: a file with the project(s) and all their images, to keep safe
+  // outside the browser (browser storage is lost if site data is cleared)
+  const downloadBackup = async (ids, name) => {
+    try {
+      const blob = await exportBackup(ids)
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${(name || 'adityanta-projects').replace(/[\\/:*?"<>|]+/g, '').slice(0, 80) || 'adityanta-projects'}.adityanta.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000)
+      toast.success(ids.length > 1 ? `Backup of ${ids.length} projects downloaded` : 'Backup downloaded')
+    } catch (e) {
+      toast.error(e?.message || 'Could not create the backup')
+    }
+  }
+
+  const [storageInfo, setStorageInfo] = useState(null)
+  useEffect(() => {
+    if (activeTab !== 'files') return
+    getStorageInfo().then(setStorageInfo).catch(() => {})
+  }, [activeTab, userFiles.length])
   const handleRestoreFile = (fileId) => { restoreUserFile(fileId); toast.success('File restored') }
   const handlePermanentDelete = (fileId) => { permanentlyDeleteFile(fileId); toast.success('File permanently deleted') }
 
@@ -860,7 +946,7 @@ const navItems = [
             </>
           )}
 
-          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-md text-xs font-semibold z-10 ${template.license === 'FREE' ? 'bg-white/95 text-primary' : 'bg-orange-500 text-white'}`}>{getLicenseDisplay(template.license)}</div>
+          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-md text-xs font-semibold z-10 ${isPaidLicense(template.license) ? 'bg-orange-500 text-white' : 'bg-white/95 text-primary'}`}>{getLicenseDisplay(template.license)}</div>
           {showFavoriteButton && (
             <button onClick={(e) => handleToggleFavorite(template, e)} className={`absolute top-3 left-3 w-8 h-8 rounded-full flex items-center justify-center transition-all z-10 ${isFav ? 'bg-yellow-400 text-white' : 'bg-white/80 text-gray-400 hover:bg-white hover:text-yellow-500'}`}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
@@ -870,10 +956,10 @@ const navItems = [
         <div className="p-4">
           <h4 className="font-semibold text-gray-900 mb-2">{template.title || 'Untitled'}</h4>
           <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>{template.topic || 'General'}</span>
-            <span className="w-1 h-1 rounded-full bg-gray-300" />
-            <span>{template.frames || 1} frames</span>
-            <span className="w-1 h-1 rounded-full bg-gray-300" />
+            {template.topic ? <span>{template.topic}</span> : null}
+            {template.topic ? <span className="w-1 h-1 rounded-full bg-gray-300" /> : null}
+            {template.frames != null ? <span>{template.frames} {template.frames === 1 ? 'slide' : 'slides'}</span> : null}
+            {template.frames != null ? <span className="w-1 h-1 rounded-full bg-gray-300" /> : null}
             <div className="flex items-center gap-1">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
               {formatDownloads(template.downloads || 0)}
@@ -1033,8 +1119,8 @@ const navItems = [
                       )}
                       {suggestion.template && (
                         <p className="text-xs text-gray-500">
-                          {suggestion.template.topic} &bull; {suggestion.template.frames} frames
-                          {suggestion.match === 'description' && ' &bull; Match in description'}
+                          {[suggestion.template.topic, suggestion.template.frames != null ? `${suggestion.template.frames} slides` : null].filter(Boolean).join(' • ')}
+                          {suggestion.match === 'description' && ' • Match in description'}
                         </p>
                       )}
                     </div>
@@ -1184,7 +1270,13 @@ const navItems = [
                       <line x1="12" y1="9" x2="12" y2="13" />
                       <line x1="12" y1="17" x2="12.01" y2="17" />
                     </svg>
-                    <span>Server currently unreachable. Using local template cache.</span>
+                    <span className="flex-1">Can't reach the server, so templates can't be loaded right now. Your own projects are safe on this device.</span>
+                    <button
+                      onClick={() => fetchTemplates({ storeMode: 'non_store' }, 0).catch(() => {})}
+                      className="px-3 py-1 rounded-lg bg-white border border-amber-200 text-amber-800 hover:bg-amber-100 text-xs font-semibold"
+                    >
+                      Retry
+                    </button>
                   </div>
                 )}
                 {/* Recently Viewed */}
@@ -1218,7 +1310,7 @@ const navItems = [
                                 }}
                               />
                             ) : (
-                              <span className="text-xs font-bold text-white drop-shadow-sm opacity-80 group-hover:opacity-100 transition-opacity">{t.preview || t.title?.slice(0, 8)}</span>
+                              <span className="text-xs font-bold text-white drop-shadow-sm opacity-80 group-hover:opacity-100 transition-opacity">{getTemplatePreviewLabel(t)}</span>
                             )}
                           </div>
                           <div className="px-2 py-1.5">
@@ -1257,13 +1349,19 @@ const navItems = [
                           onClick={() => navigate(`/editor/${file.id}`)}
                           className="flex-shrink-0 w-48 bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer border border-gray-100 group"
                         >
-                          <div className={`h-28 bg-gradient-to-br ${file.thumbnail || 'from-blue-400 to-purple-600'} relative flex items-center justify-center`}>
-                            <div className="absolute inset-0 bg-black/20 group-hover:bg-black/30 transition-all" />
-                            <span className="relative z-10 text-white text-xs font-bold px-2 text-center line-clamp-2">{file.title?.split(' ').slice(0, 3).join(' ').toUpperCase()}</span>
+                          <div className={`h-28 bg-gradient-to-br ${file.thumbnail || 'from-blue-400 to-purple-600'} relative flex items-center justify-center overflow-hidden`}>
+                            {file.cover ? (
+                              <img src={file.cover} alt="" className="absolute inset-0 w-full h-full object-cover bg-white" draggable={false} />
+                            ) : (
+                              <>
+                                <div className="absolute inset-0 bg-black/20 group-hover:bg-black/30 transition-all" />
+                                <span className="relative z-10 text-white text-xs font-bold px-2 text-center line-clamp-2">{file.title?.split(' ').slice(0, 3).join(' ').toUpperCase()}</span>
+                              </>
+                            )}
                           </div>
                           <div className="p-2.5">
                             <p className="text-xs font-semibold text-gray-900 truncate">{file.title || 'Untitled'}</p>
-                            <p className="text-[10px] text-gray-400 mt-0.5">{file.savedAt ? new Date(file.savedAt).toLocaleDateString() : (file.created || '')}</p>
+                            <p className="text-[10px] text-gray-400 mt-0.5">{file.updatedAt ? new Date(file.updatedAt).toLocaleDateString() : (file.created || '')}</p>
                           </div>
                         </div>
                       ))}
@@ -1279,8 +1377,10 @@ const navItems = [
                 ) : filteredTemplates.length === 0 ? (
                   <EmptyState
                     icon="search"
-                    title="No templates found"
-                    description="Try adjusting your filters or search query to find what you're looking for"
+                    title={templates.length === 0 ? (serverStatus === 'online' ? 'No templates yet' : 'Templates unavailable') : 'No templates found'}
+                    description={templates.length === 0
+                      ? (serverStatus === 'online' ? 'The server has no templates to show.' : 'Check your connection and press Retry.')
+                      : "Try adjusting your filters or search query to find what you're looking for"}
                   />
                 ) : (
                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">{filteredTemplates.map(t => <TemplateCard key={t.id || t.template_id} template={t} showFavoriteButton={true} />)}</div>
@@ -1417,6 +1517,21 @@ const navItems = [
 
             {activeTab === 'files' && (
               <div>
+                {userFiles.length > 0 && (
+                  <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                    <span className="flex-1 min-w-[240px]">
+                      Your projects are saved automatically in this browser{storageInfo?.usage != null ? ` (${(storageInfo.usage / 1048576).toFixed(storageInfo.usage > 104857600 ? 0 : 1)} MB used)` : ''}.
+                      Clearing browsing data deletes them — download a backup to keep a copy.
+                    </span>
+                    <button
+                      onClick={() => downloadBackup(userFiles.map((f) => f.id), `adityanta-backup-${new Date().toISOString().slice(0, 10)}`)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 font-semibold text-amber-900 hover:bg-amber-100"
+                    >
+                      Back up all projects
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-bold text-gray-900">Your Files</h2>
                   {isPremium && (
@@ -1448,43 +1563,13 @@ const navItems = [
                   <input
                     id="header-upload-input"
                     type="file"
-                    accept=".pptx"
+                    accept=".pptx,.json,application/vnd.openxmlformats-officedocument.presentationml.presentation"
                     className="hidden"
                     disabled={isUploading}
-                    onChange={async (e) => {
+                    onChange={(e) => {
                       const file = e.target.files?.[0]
-                      if (!file) return
-                      const ext = file.name.split('.').pop()?.toLowerCase()
-                      if (ext !== 'pptx') {
-                        toast.error('Please upload a .pptx PowerPoint file')
-                        e.target.value = ''
-                        return
-                      }
-                      setIsUploading(true)
-                      try {
-                        const parsed = await parsePPTX(file)
-                        if (!parsed?.frames?.length) throw new Error('No slides found in file')
-                        if (parsed.frames.length > 500) {
-                          toast.warning('Only first 500 slides will be imported.')
-                          parsed.frames = parsed.frames.slice(0, 500)
-                        }
-                        const projectData = {
-                          id: `uploaded_${Date.now()}`,
-                          title: (parsed.title || file.name.replace(/\.[^.]+$/, '')).substring(0, 100),
-                          frames: parsed.frames,
-                          thumbnail: 'from-green-400 to-emerald-500',
-                          isUserUpload: true,
-                          uploadedAt: new Date().toISOString(),
-                        }
-                        saveProject(projectData)
-                        toast.success(`Imported "${projectData.title}" with ${parsed.frames.length} slides`)
-                        setTimeout(() => navigate(`/editor/${projectData.id}`), 600)
-                      } catch (error) {
-                        toast.error(`Failed to parse file: ${error.message || 'Invalid PowerPoint file'}`)
-                      } finally {
-                        setIsUploading(false)
-                        e.target.value = ''
-                      }
+                      e.target.value = ''
+                      importFile(file)
                     }}
                   />
                 </div>
@@ -1552,123 +1637,13 @@ const navItems = [
                     <input
                       id="template-upload-input"
                       type="file"
-                      accept=".pptx,.ppt,.json"
+                      accept=".pptx,.json,application/vnd.openxmlformats-officedocument.presentationml.presentation"
                       className="hidden"
                       disabled={isUploading}
-                      onChange={async (e) => {
+                      onChange={(e) => {
                         const file = e.target.files?.[0]
-                        if (!file) return
-
-                        // Validate file format
-                        const acceptedExts = ['pptx']
-                        const ext = file.name.split('.').pop()?.toLowerCase()
-                        if (!ext || !acceptedExts.includes(ext)) {
-                          toast.error('Please upload a .pptx PowerPoint file')
-                          e.target.value = ''
-                          return
-                        }
-
-                        // Validate file size (50MB limit)
-                        if (file.size > 50 * 1024 * 1024) {
-                          toast.error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 50MB.`)
-                          e.target.value = ''
-                          return
-                        }
-
-                        // Check if file is too small (likely invalid)
-                        if (file.size < 1024) {
-                          toast.error('File too small. Please check your file.')
-                          e.target.value = ''
-                          return
-                        }
-
-                        setIsUploading(true)
-                        const fileName = file.name.toLowerCase()
-
-                        try {
-                          // Allow import from JSON first
-                          if (fileName.endsWith('.json')) {
-                            toast.info('Loading JSON project...')
-                            const { importFromJSON } = await import('../../utils/exportUtils')
-                            const data = await importFromJSON(file)
-                            if (data && data.frames && data.frames.length > 0) {
-                              const projectData = {
-                                id: `uploaded_${Date.now()}`,
-                                title: (data.title || file.name.replace(/\.[^.]+$/, '')).substring(0, 100),
-                                frames: data.frames,
-                                thumbnail: 'from-green-400 to-emerald-500',
-                                isUserUpload: true,
-                                uploadedAt: new Date().toISOString(),
-                              }
-                              saveProject(projectData)
-                              toast.success(`Loaded "${data.title || 'project'}" with ${data.frames.length} slides`)
-                              setTimeout(() => navigate(`/editor/${projectData.id}`), 600)
-                            } else {
-                              toast.error('Invalid JSON file - no slides found')
-                            }
-                            setIsUploading(false)
-                            e.target.value = ''
-                            return
-                          }
-
-                          // Reject ppt
-                          if (fileName.endsWith('.ppt') && !fileName.endsWith('.pptx')) {
-                            toast.error('Old .ppt format is not supported. Please convert to .pptx first.')
-                            e.target.value = ''
-                            setIsUploading(false)
-                            return
-                          }
-
-                          toast.info('Parsing presentation...')
-
-                          // Parse PPTX file entirely on the frontend
-                          const parsedData = await parsePPTX(file)
-                          logger.info('PPTX parsed successfully:', { frames: parsedData.frames?.length || 0, title: parsedData.title })
-
-                          // Validate parsed data
-                          if (!parsedData.frames || !Array.isArray(parsedData.frames) || parsedData.frames.length === 0) {
-                            throw new Error('No slides found in presentation')
-                          }
-
-                          // Cap at 500 slides
-                          if (parsedData.frames.length > 500) {
-                            toast.warning('Only first 500 slides will be imported.')
-                            parsedData.frames = parsedData.frames.slice(0, 500)
-                          }
-
-                          // Create project from parsed PPTX â€” no backend upload needed
-                          const projectData = {
-                            id: `uploaded_${Date.now()}`,
-                            title: (parsedData.title || file.name.replace(/\.[^.]+$/, '')).substring(0, 100),
-                            frames: parsedData.frames,
-                            thumbnail: 'from-green-400 to-emerald-500',
-                            isUserUpload: true,
-                            uploadedAt: new Date().toISOString(),
-                          }
-
-                          // Save project locally
-                          const saved = saveProject(projectData)
-                          if (!saved) {
-                            toast.error('Failed to save project. Please clear browser storage and try again.')
-                            e.target.value = ''
-                            setIsUploading(false)
-                            return
-                          }
-
-                          toast.success(`Imported "${projectData.title}" â€” ${parsedData.frames.length} slide${parsedData.frames.length > 1 ? 's' : ''}. Opening editor...`)
-
-                          // Navigate to editor
-                          setTimeout(() => {
-                            navigate(`/editor/${projectData.id}`)
-                          }, 600)
-
-                        } catch (error) {
-                          logger.error('PPTX upload error:', error)
-                          toast.error(`Failed to parse file: ${error.message || 'Invalid PowerPoint file'}`)
-                        } finally {
-                          setIsUploading(false)
-                          e.target.value = ''
-                        }
+                        e.target.value = ''
+                        importFile(file)
                       }}
                     />
                   </div>
@@ -1680,22 +1655,30 @@ const navItems = [
                         className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all cursor-pointer group border border-gray-100"
                         onDoubleClick={() => navigate(`/editor/${file.id}`)}
                       >
-                        <div className={`h-44 bg-gradient-to-br ${file.thumbnail || 'from-blue-400 to-purple-600'} relative flex items-center justify-center`}>
-                          <div className="absolute inset-0 opacity-30 group-hover:opacity-50 transition-all bg-black" />
-                          <div className="text-center z-10 px-4">
-                            <h3 className="text-xl font-black text-white drop-shadow-lg">{file.title?.split(' ').slice(0, 2).join(' ').toUpperCase() || 'PROJECT'}</h3>
-                          </div>
+                        <div className={`h-44 bg-gradient-to-br ${file.thumbnail || 'from-blue-400 to-purple-600'} relative flex items-center justify-center overflow-hidden`}>
+                          {file.cover ? (
+                            <img src={file.cover} alt="" className="absolute inset-0 w-full h-full object-cover bg-white" draggable={false} />
+                          ) : (
+                            <>
+                              <div className="absolute inset-0 opacity-30 group-hover:opacity-50 transition-all bg-black" />
+                              <div className="text-center z-10 px-4">
+                                <h3 className="text-xl font-black text-white drop-shadow-lg">{file.title?.split(' ').slice(0, 2).join(' ').toUpperCase() || 'PROJECT'}</h3>
+                              </div>
+                            </>
+                          )}
                           <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                            <button onClick={(e) => { e.stopPropagation(); navigate(`/editor/${file.id}`) }} className="p-2 bg-white rounded-lg hover:bg-gray-100" title="Edit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
-                            <button onClick={(e) => { e.stopPropagation(); handleDeleteFile(file.id) }} className="p-2 bg-white rounded-lg hover:bg-red-100" title="Move to Trash"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button>
+                            <button onClick={(e) => { e.stopPropagation(); navigate(`/editor/${file.id}`) }} className="p-2 bg-white rounded-lg hover:bg-gray-100 shadow-sm" title="Edit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
+                            <button onClick={(e) => { e.stopPropagation(); handleDuplicateFile(file) }} className="p-2 bg-white rounded-lg hover:bg-gray-100 shadow-sm" title="Duplicate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg></button>
+                            <button onClick={(e) => { e.stopPropagation(); downloadBackup([file.id], file.title) }} className="p-2 bg-white rounded-lg hover:bg-gray-100 shadow-sm" title="Download backup file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg></button>
+                            <button onClick={(e) => { e.stopPropagation(); handleDeleteFile(file.id) }} className="p-2 bg-white rounded-lg hover:bg-red-100 shadow-sm" title="Move to Trash"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg></button>
                           </div>
                         </div>
                         <div className="p-4" onClick={() => navigate(`/editor/${file.id}`)}>
                           <h4 className="font-semibold text-gray-900 mb-2">{file.title || 'Untitled'}</h4>
                           <div className="flex items-center gap-3 text-xs text-gray-500">
-                            <span>{file.frameCount || (Array.isArray(file.frames) ? file.frames.length : (typeof file.frames === 'number' ? file.frames : 1))} frames</span>
+                            <span>{file.frameCount || 1} slide{file.frameCount === 1 ? '' : 's'}</span>
                             <span className="w-1 h-1 rounded-full bg-gray-300" />
-                            <span>{file.created || 'Just now'}</span>
+                            <span title={file.created ? `Created ${file.created}` : undefined}>{file.updatedAt ? `Edited ${new Date(file.updatedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` : (file.created || 'Just now')}</span>
                           </div>
                         </div>
                       </div>
@@ -1725,7 +1708,7 @@ const navItems = [
                         return (
                       <div key={tId} className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all cursor-pointer group border border-gray-100">
                         <div onClick={() => handleTemplateClick(template)} className={`h-44 bg-gradient-to-br ${template.gradient} relative flex items-center justify-center overflow-hidden`}>
-                          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-md text-xs font-semibold z-10 ${template.license === 'FREE' ? 'bg-white/95 text-primary' : 'bg-orange-500 text-white'}`}>{getLicenseDisplay(template.license)}</div>
+                          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-md text-xs font-semibold z-10 ${isPaidLicense(template.license) ? 'bg-orange-500 text-white' : 'bg-white/95 text-primary'}`}>{getLicenseDisplay(template.license)}</div>
                           {resolvedImage ? (
                             <img
                               src={resolvedImage}
@@ -1744,7 +1727,7 @@ const navItems = [
                           )}
                         </div>
                         <div className="p-4"><h4 className="font-semibold text-gray-900 mb-2">{template.title}</h4>
-                          <div className="flex items-center justify-between"><div className="flex items-center gap-3 text-xs text-gray-500"><span>{template.topic}</span><span className="w-1 h-1 rounded-full bg-gray-300" /><span>{template.frames} frames</span></div>
+                          <div className="flex items-center justify-between"><div className="flex items-center gap-3 text-xs text-gray-500">{template.topic ? <span>{template.topic}</span> : null}{template.topic && template.frames != null ? <span className="w-1 h-1 rounded-full bg-gray-300" /> : null}{template.frames != null ? <span>{template.frames} {template.frames === 1 ? 'slide' : 'slides'}</span> : null}</div>
                             <button onClick={(e) => handleToggleFavorite(template, e)} className="p-1.5 text-yellow-500 hover:bg-yellow-50 rounded-lg transition-all"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg></button>
                           </div>
                         </div>
@@ -1879,7 +1862,7 @@ const navItems = [
                         className="relative aspect-[16/9] rounded-lg overflow-hidden border border-gray-200 hover:border-primary hover:shadow-md transition-all"
                         title={`${topic} ${idx + 1}`}
                       >
-                        <img src={imgPath} alt={`${topic} ${idx + 1}`} className="w-full h-full object-cover" loading="lazy" />
+                        <img src={thumbBackground(imgPath)} alt={`${topic} ${idx + 1}`} className="w-full h-full object-cover" loading="lazy" />
                       </button>
                     ))}
                   </div>

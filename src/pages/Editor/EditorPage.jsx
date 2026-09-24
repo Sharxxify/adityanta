@@ -15,8 +15,15 @@ import ShareDropdown from '../../components/Toolbar/ShareDropdown'
 import KeyboardShortcutsModal from '../../components/Modal/KeyboardShortcutsModal'
 import UpgradePlanModal from '../../components/Modal/UpgradePlanModal'
 import VideoExportModal from '../../components/Modal/VideoExportModal'
+import ElementView, { getTextFrameStyle, getTableCells } from '../../components/Slide/ElementView'
+import { sanitizeHtml, clearInlineFormatting } from '../../components/Slide/html'
+import SlideThumbnail from '../../components/Slide/SlideThumbnail'
+import SlideView, { getFrameBackgroundStyle } from '../../components/Slide/SlideView'
+import * as tableOps from '../../components/Slide/tableOps'
 import { templates as mockTemplates } from '../../utils/templateData'
 import backgroundData from '../../utils/backgroundData.json'
+import { displayBackground, thumbBackground, sameBackground } from '../../utils/backgrounds'
+import useProjectAutosave from './useProjectAutosave'
 
 const SLIDE_WIDTH = 1280
 const SLIDE_HEIGHT = 720
@@ -88,6 +95,8 @@ const computeFrameLayouts = (sideCount) => {
   ]
 }
 const templateRuntimeCache = new Map()
+// Background picked for a new project on the Home page
+const NEW_PROJECT_BG_KEY = 'adityanta_new_project_bg'
 const PREZI_LAYOUT_PRESETS = [
   { x: 820, y: 220, width: 1280, height: 720 },
   { x: 60, y: 120, width: 640, height: 360 },
@@ -432,10 +441,19 @@ const EditorPage = () => {
   const location = useLocation()
   // Background chosen in template modal, passed via navigate state
   const pendingBgRef = useRef(location.state?.selectedBackground ?? null)
+  // Background picked in Home's "new project" dialog. Read once so the topic
+  // default below can't replace it (#58)
+  const newProjectBgRef = useRef(undefined)
+  if (newProjectBgRef.current === undefined) {
+    let choice = null
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(NEW_PROJECT_BG_KEY) || 'null')
+      if ((templateId || 'new') === 'new' && saved && 'background' in saved) choice = { background: saved.background ?? null }
+    } catch { /* ignore */ }
+    newProjectBgRef.current = choice
+  }
   const canvasRef = useRef(null)
-  const autoSaveTimerRef = useRef(null)
   const projectTitleRef = useRef(null)
-  const currentProjectIdRef = useRef(null)
   const hasAutoNamedRef = useRef(false)
   const presentDropdownRef = useRef(null)
   const visibilityDropdownRef = useRef(null)
@@ -507,9 +525,13 @@ const EditorPage = () => {
     exportProject,
     // Version History
     versionHistory,
+    refreshVersions,
     saveVersion,
     loadVersion,
     deleteVersion,
+    // Project session
+    getSession,
+    updateSession,
     // Slide Master
     slideMaster,
     updateSlideMaster,
@@ -530,13 +552,11 @@ const EditorPage = () => {
     // Editor Background
     editorBackground,
     setEditorBackground,
-    // Auto-save
-    lastSaved,
     header,
     updateHeader,
   } = useEditor()
 
-  const { templates: apiTemplates, saveProject: saveToUserFiles, getProject, userFiles, isUserFilesLoaded, downloadTemplate } = useApp()
+  const { templates: apiTemplates, saveProject: saveToUserFiles, loadProject, getProject, findTemplateCopy, updateProjectSummary, restoreUserFile, trashedItems, isUserFilesLoaded, downloadTemplate } = useApp()
 
   const allTemplates = useMemo(() => {
     return [...(apiTemplates || []), ...mockTemplates]
@@ -556,13 +576,13 @@ const EditorPage = () => {
 
     const stableSeed = `${templateId || ''}|${projectTopic || topic}`
     const hash = [...stableSeed].reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
-    return bgs[hash % bgs.length]
+    return displayBackground(bgs[hash % bgs.length])
   }, [projectTopic, templateId])
 
   const editorBgImage = editorBackground !== undefined ? editorBackground : defaultEditorBg
 
   useEffect(() => {
-    if (editorBackground === undefined && defaultEditorBg !== null) {
+    if (editorBackground === undefined && defaultEditorBg !== null && !newProjectBgRef.current) {
       setEditorBackground(defaultEditorBg)
     }
   }, [editorBackground, defaultEditorBg, setEditorBackground])
@@ -577,36 +597,6 @@ const EditorPage = () => {
   const savedRangeRef = useRef(null)
   const savedOffsetsRef = useRef(null)
   const draggedTextDataRef = useRef(null)
-
-  const convertRunsToHtml = (runs) => {
-    if (!runs || runs.length === 0) return ''
-    return runs.map(run => {
-      if (run.text === '\n') return '<br>'
-      
-      const styles = []
-      if (run.fontSize) styles.push(`font-size:${run.fontSize}px`)
-      if (run.fontWeight) {
-        styles.push(`font-weight:${run.fontWeight === 'bold' || run.fontWeight === 700 ? 'bold' : 'normal'}`)
-      }
-      if (run.fontFamily) styles.push(`font-family:${run.fontFamily}`)
-      if (run.fontStyle && run.fontStyle !== 'normal') styles.push(`font-style:${run.fontStyle}`)
-      if (run.textDecoration && run.textDecoration !== 'none') styles.push(`text-decoration:${run.textDecoration}`)
-      if (run.color) styles.push(`color:${run.color}`)
-      if (run.lineHeight) styles.push(`line-height:${run.lineHeight}`)
-      
-      const styleAttr = styles.length > 0 ? ` style="${styles.join(';')}"` : ''
-      const escapedText = (run.text || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br>')
-      
-      if (styleAttr) {
-        return `<span${styleAttr}>${escapedText}</span>`
-      }
-      return escapedText
-    }).join('')
-  }
 
   const rgbToHex = (rgb) => {
     if (!rgb) return '#1a1a1a'
@@ -708,6 +698,9 @@ const EditorPage = () => {
     }
   }
 
+  // Toolbar state while editing text: the browser's own command state (it
+  // accounts for formatting inherited from outer spans), like PowerPoint's
+  // ribbon reflecting the text under the caret / selection.
   const updateSelectionFormatting = () => {
     const sel = window.getSelection()
     if (!sel.rangeCount) return
@@ -721,15 +714,69 @@ const EditorPage = () => {
     const editableEl = document.querySelector('[data-text-editable="true"]') || editableDivRef.current
     if (editableEl && editableEl.contains(node)) {
       const computedStyle = window.getComputedStyle(node)
+      const q = (cmd) => { try { return document.queryCommandState(cmd) } catch (_e) { return false } }
       setSelectionFormatting({
         fontSize: parseFloat(computedStyle.fontSize) || 16,
-        fontWeight: computedStyle.fontWeight === 'bold' || parseInt(computedStyle.fontWeight) >= 700 ? 'bold' : 'normal',
-        fontStyle: computedStyle.fontStyle === 'italic' ? 'italic' : 'normal',
-        textDecoration: computedStyle.textDecoration.includes('underline') ? 'underline' : 'none',
+        fontWeight: q('bold') ? 'bold' : 'normal',
+        fontStyle: q('italic') ? 'italic' : 'normal',
+        textDecoration: q('underline') ? 'underline' : 'none',
         color: rgbToHex(computedStyle.color),
         fontFamily: computedStyle.fontFamily.replace(/['"]/g, '').split(',')[0].trim(),
       })
     }
+  }
+
+  // Toolbar state for a selected (not edited) text box: what the text
+  // actually looks like — bold only if all of it is bold, etc.
+  const readBoxFormatting = (elementId) => {
+    const root = document.querySelector(`[data-editor-element-id="${elementId}"]`)
+    if (!root) return {}
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let first = null
+    let allBold = true
+    let allItalic = true
+    let allUnderline = true
+    let any = false
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.data.trim() || n.parentElement?.closest('[data-bullet]')) continue
+      const el = n.parentElement
+      const cs = window.getComputedStyle(el)
+      any = true
+      if (!first) first = cs
+      if (!(cs.fontWeight === 'bold' || parseInt(cs.fontWeight, 10) >= 600)) allBold = false
+      if (cs.fontStyle !== 'italic') allItalic = false
+      let underlined = false
+      for (let p = el; p && p !== root.parentElement; p = p.parentElement) {
+        if (window.getComputedStyle(p).textDecorationLine.includes('underline')) { underlined = true; break }
+      }
+      if (!underlined) allUnderline = false
+    }
+    if (!any) return {}
+    return {
+      fontWeight: allBold ? 'bold' : 'normal',
+      fontStyle: allItalic ? 'italic' : 'normal',
+      textDecoration: allUnderline ? 'underline' : 'none',
+      fontSize: Math.round(parseFloat(first.fontSize) || 0) || undefined,
+      color: rgbToHex(first.color),
+      fontFamily: first.fontFamily.replace(/['"]/g, '').split(',')[0].trim(),
+    }
+  }
+
+  // Apply formatting to a whole selected text box: set it on the box and
+  // clear the same formatting from individual runs so the change is visible
+  // everywhere (and can be undone again).
+  const INLINE_TEXT_KEYS = ['fontWeight', 'fontStyle', 'textDecoration', 'color', 'fontFamily', 'fontSize']
+  const applyBoxFormatting = (elementId, updates) => {
+    const el = elements.find((x) => x.id === elementId)
+    if (!el) return
+    const keys = Object.keys(updates).filter((k) => INLINE_TEXT_KEYS.includes(k))
+    const patch = { ...updates }
+    if (keys.length && typeof el.content === 'string' && el.content.includes('<')) {
+      patch.content = clearInlineFormatting(el.content, keys)
+      patch.runs = null
+    }
+    updateElement(elementId, patch)
+    commitHistory()
   }
 
   const applyStyleToSelection = (updates) => {
@@ -819,6 +866,17 @@ const EditorPage = () => {
     }
   }
 
+  // Selected text box (not being edited): read its real formatting
+  useEffect(() => {
+    if (editingTextId || !selectedElementId) {
+      if (!editingTextId) setSelectionFormatting({})
+      return
+    }
+    const raf = requestAnimationFrame(() => setSelectionFormatting(readBoxFormatting(selectedElementId)))
+    return () => cancelAnimationFrame(raf)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedElementId, editingTextId, selectedElement])
+
   useEffect(() => {
     if (!editingTextId) return
 
@@ -833,19 +891,39 @@ const EditorPage = () => {
     }
   }, [editingTextId])
 
+  // Where to put the caret when text editing starts (PowerPoint: at the
+  // click point; a double-click selects the word under the pointer)
+  const pendingCaretRef = useRef(null)
+  const caretRangeAt = (x, y) => {
+    if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y)
+    const pos = document.caretPositionFromPoint?.(x, y)
+    if (!pos) return null
+    const r = document.createRange()
+    r.setStart(pos.offsetNode, pos.offset)
+    r.collapse(true)
+    return r
+  }
   useEffect(() => {
     if (editingTextId && editableDivRef.current) {
       const el = editableDivRef.current
       el.focus()
-      
+      const pending = pendingCaretRef.current
+      pendingCaretRef.current = null
       try {
-        const range = document.createRange()
         const sel = window.getSelection()
-        range.selectNodeContents(el)
-        range.collapse(false) // collapse to end
+        let range = pending ? caretRangeAt(pending.x, pending.y) : null
+        if (!range || !el.contains(range.startContainer)) {
+          range = document.createRange()
+          range.selectNodeContents(el)
+          range.collapse(false) // no click point: caret at the end
+        }
         sel.removeAllRanges()
         sel.addRange(range)
-        savedRangeRef.current = range
+        if (pending?.word && sel.modify) {
+          sel.modify('move', 'backward', 'word')
+          sel.modify('extend', 'forward', 'word')
+        }
+        savedRangeRef.current = sel.rangeCount ? sel.getRangeAt(0) : range
       } catch (err) {
         console.error('Failed to focus/set cursor:', err)
       }
@@ -935,11 +1013,6 @@ const EditorPage = () => {
   const [bgSearchFilter, setBgSearchFilter] = useState('')
   const [isAnimationPreview, setIsAnimationPreview] = useState(false)
   const [animationKey, setAnimationKey] = useState(0) // Used to restart animations
-  const [isSaving, setIsSaving] = useState(false)
-  const [lastSavedTime, setLastSavedTime] = useState(null)
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const isInitialLoadRef = useRef(true)
-  const [currentProjectId, setCurrentProjectId] = useState(null)
   const [hasAutoNamed, setHasAutoNamed] = useState(false)
   const [showPresentDropdown, setShowPresentDropdown] = useState(false)
   const [projectVisibility, setProjectVisibility] = useState('public')
@@ -947,9 +1020,63 @@ const EditorPage = () => {
   const [fitZoom, setFitZoom] = useState(100)
   const [camera, setCamera] = useState({ zoom: 0.75, panX: 0, panY: 0 })
 
+  // ── Camera ────────────────────────────────────────────────────────────────
+  // The world layer uses transform-origin 0 0:
+  //     screen = zoom × (world + pan)      (screen = px inside the viewport)
+  //     world  = screen / zoom − pan
+  // (The origin used to be the centre of the world box, which moved whenever a
+  // slide was dragged past the edge — the whole canvas jumped.)
+  // While zooming / panning / animating, the transform is written straight to
+  // the DOM so React doesn't re-render the editor on every frame; the
+  // `camera` state (zoom %, handle sizes) catches up once the camera settles.
+  const viewportRef = useRef(null)
+  const worldLayerRef = useRef(null)
+  const cameraLiveRef = useRef(camera)
+  const cameraCommitTimerRef = useRef(null)
+  const cameraTransform = (c) => `scale(${c.zoom}) translate(${c.panX}px, ${c.panY}px)`
+  const cameraSettleTimerRef = useRef(null)
+  const moveCamera = useCallback((next, { commit = 'debounced' } = {}) => {
+    const cam = typeof next === 'function' ? next(cameraLiveRef.current) : next
+    if (!cam || !Number.isFinite(cam.zoom) || !Number.isFinite(cam.panX) || !Number.isFinite(cam.panY)) return
+    cameraLiveRef.current = cam
+    const layer = worldLayerRef.current
+    if (layer) {
+      layer.style.transform = cameraTransform(cam)
+      // #34 — the compositing hint keeps moves smooth, but a will-change layer
+      // keeps the resolution it was drawn at, so text went blurry after
+      // zooming into a (new) slide. Drop it once the camera rests: the
+      // browser then redraws everything sharp at the new zoom.
+      if (layer.style.willChange !== 'transform') layer.style.willChange = 'transform'
+      clearTimeout(cameraSettleTimerRef.current)
+      cameraSettleTimerRef.current = setTimeout(() => {
+        if (worldLayerRef.current) worldLayerRef.current.style.willChange = 'auto'
+      }, 180)
+    }
+    clearTimeout(cameraCommitTimerRef.current)
+    if (commit === 'now') setCamera(cam)
+    else if (commit === 'debounced') cameraCommitTimerRef.current = setTimeout(() => setCamera(cameraLiveRef.current), 140)
+  }, [])
+  useEffect(() => () => {
+    clearTimeout(cameraCommitTimerRef.current)
+    clearTimeout(cameraSettleTimerRef.current)
+  }, [])
+  /** Camera that keeps the world point under screen point (sx, sy) fixed */
+  const zoomAround = (cam, nextZoom, sx, sy) => ({
+    zoom: nextZoom,
+    panX: cam.panX + sx * (1 / nextZoom - 1 / cam.zoom),
+    panY: cam.panY + sy * (1 / nextZoom - 1 / cam.zoom),
+  })
+  const clampZoom = (z) => Math.max(0.05, Math.min(40, z))
+  /** Screen (client) coordinates → world coordinates */
+  const clientToWorld = useCallback((clientX, clientY) => {
+    const rect = viewportRef.current?.getBoundingClientRect()
+    const cam = cameraLiveRef.current
+    if (!rect) return null
+    return { x: (clientX - rect.left) / cam.zoom - cam.panX, y: (clientY - rect.top) / cam.zoom - cam.panY }
+  }, [])
+
   // Keep refs in sync for autosave closure (must be after state declarations)
   projectTitleRef.current = projectTitle
-  currentProjectIdRef.current = currentProjectId
   hasAutoNamedRef.current = hasAutoNamed
 
   const inFlightTemplateRef = useRef({ id: null, promise: null })
@@ -959,6 +1086,7 @@ const EditorPage = () => {
   // Ref so Ctrl+S in the keyboard effect always calls the latest handleSaveProject
   // without adding it to the deps array (handleSaveProject is declared further down)
   const saveProjectRef = useRef(null)
+  const presentRef = useRef(null)
 
   // Drawing state
   const drawingCanvasRef = useRef(null)
@@ -971,20 +1099,6 @@ const EditorPage = () => {
   const [templateLoaded, setTemplateLoaded] = useState(false)
   const [isTemplateLoading, setIsTemplateLoading] = useState(false)
 
-  // Track unsaved changes
-  useEffect(() => {
-    if (isTemplateLoading) {
-      isInitialLoadRef.current = true;
-      return;
-    }
-    if (isInitialLoadRef.current && frames && frames.length > 0) {
-      isInitialLoadRef.current = false;
-      return;
-    }
-    if (!isInitialLoadRef.current) {
-      setHasUnsavedChanges(true);
-    }
-  }, [frames, isTemplateLoading])
 
   // Drag-drop for images
   const [isDragOver, setIsDragOver] = useState(false)
@@ -1066,68 +1180,6 @@ const EditorPage = () => {
     }
   }, [frames.length])
 
-  // Ensure frames are always initialized - safety fallback
-  useEffect(() => {
-    if (frames.length === 0 && templateId !== 'new' && !templateLoaded) {
-      logger.warn('EditorPage: Frames are empty, initializing with blank frame')
-      // Pick a random background from the project topic
-      const blankFrame = {
-        id: 1,
-        title: 'Slide 1',
-        preview: 'Slide 1',
-        backgroundColor: 'transparent',
-        backgroundImage: null,
-        notes: '',
-        transition: 'fade',
-        elements: [
-          {
-            id: 1001,
-            type: 'text',
-            content: 'Click to add title',
-            x: 50,
-            y: 100,
-            width: 700,
-            height: 70,
-            fontSize: 40,
-            fontWeight: 'bold',
-            fontFamily: 'Inter',
-            fontStyle: 'normal',
-            textDecoration: 'none',
-            textAlign: 'center',
-            color: '#333333',
-            isPlaceholder: true,
-            borderWidth: 0,
-            borderColor: '#333333',
-            borderRadius: 0,
-            backgroundColor: 'transparent',
-          },
-          {
-            id: 1002,
-            type: 'text',
-            content: 'Click to add content',
-            x: 50,
-            y: 200,
-            width: 700,
-            height: 300,
-            fontSize: 20,
-            fontWeight: 'normal',
-            fontFamily: 'Inter',
-            fontStyle: 'normal',
-            textDecoration: 'none',
-            textAlign: 'center',
-            color: '#666666',
-            isPlaceholder: true,
-            borderWidth: 0,
-            borderColor: '#333333',
-            borderRadius: 0,
-            backgroundColor: 'transparent',
-          }
-        ]
-      }
-      loadTemplate({ title: 'Presentation', frames: [blankFrame] })
-      logger.info('EditorPage: Blank frame initialized')
-    }
-  }, [frames.length])
 
   // Keep slide fully visible in viewport area (no canvas scrolling)
   useEffect(() => {
@@ -1168,194 +1220,215 @@ const EditorPage = () => {
     return () => clearTimeout(handler)
   }, [camera.zoom, setZoom])
 
-  // Load template or user file on mount if templateId exists
-  useEffect(() => {
-    // Skip if already loaded
-    if (templateLoaded) return
-    if (!templateId || templateId === 'new') return
+  // ---------------------------------------------------------------------------
+  // Loading — what does /editor/:templateId show?
+  //   'new'          a blank project (saved on the first edit)
+  //   <project id>   one of the user's projects, from browser storage
+  //   <template id>  a Store template; the first edit creates the user's own
+  //                  copy. If a copy already exists we ask whether to
+  //                  continue it or start a new one (one copy per project).
+  // ---------------------------------------------------------------------------
+  const [loadError, setLoadError] = useState(null) // { message, kind }
+  const [resumeCopy, setResumeCopy] = useState(null) // summary of an existing copy
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const skipCopyCheckRef = useRef(null)
 
-    if (templateId === 'prezi-demo') {
-      import('../../utils/templateData').then(() => {
-        const polishedFrames = buildPolishedTemplateFrames('Prezi Drag & Drop Demo', 'Generic')
-        loadTemplate({ title: 'Prezi Drag & Drop Demo', frames: polishedFrames })
-        setProjectTitle('Prezi Drag & Drop Demo')
-        setTemplateLoaded(true)
-        setIsTemplateLoading(false)
-      })
+  const beginSession = useCallback((patch) => {
+    updateSession({
+      key: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      routeId: null,
+      projectId: null,
+      sourceTemplateId: null,
+      topic: null,
+      thumbnail: null,
+      visibility: 'public',
+      baseline: null,
+      autoSnapshotTaken: false,
+      ...patch,
+    })
+  }, [updateSession])
+
+  const applyLoadedProject = useCallback((project) => {
+    beginSession({
+      routeId: String(project.id),
+      projectId: String(project.id),
+      sourceTemplateId: project.templateId || null,
+      topic: project.topic || null,
+      thumbnail: project.thumbnail || null,
+      visibility: project.visibility || 'public',
+    })
+    loadTemplate({ title: project.title, frames: project.frames, header: project.header })
+    // undefined = the topic's default background, null = no background
+    setEditorBackground(project.editorBgImage)
+    setProjectVisibility(project.visibility || 'public')
+    setTemplateGradient(project.thumbnail || null)
+    setTemplateThumbnailUrl(project.thumbnailUrl || null)
+    refreshVersions()
+  }, [beginSession, loadTemplate, setEditorBackground, refreshVersions])
+
+  // Fetch + parse a Store template (throws with a readable message)
+  const fetchStoreTemplate = useCallback(async (id) => {
+    const cached = templateRuntimeCache.get(id)
+    if (cached) return cached
+    const result = await downloadTemplate(id)
+    if (!result?.s3_file_url) {
+      throw new Error(result?.error || result?.message || 'The template could not be downloaded.')
+    }
+    const response = await fetch(result.s3_file_url)
+    if (!response.ok) throw new Error(`The template file could not be downloaded (HTTP ${response.status}).`)
+    const blob = await response.blob()
+    if (!blob.size) throw new Error('The template file is empty.')
+    const title = result.template?.title || 'Presentation'
+    const parsed = await parsePPTX(new File([blob], `${title}.pptx`, { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }))
+    if (!parsed.frames?.length) throw new Error('The template has no slides.')
+    const data = {
+      title: result.template?.title || parsed.title || 'Presentation',
+      frames: parsed.frames,
+      topic: result.template?.topic || null,
+      thumbnailUrl: result.template?.thumbnail_url || null,
+    }
+    templateRuntimeCache.set(id, data)
+    return data
+  }, [downloadTemplate])
+
+  const applyStoreTemplate = useCallback((id, data) => {
+    beginSession({ routeId: id, sourceTemplateId: id, topic: data.topic || projectTopic || null })
+    setProjectTitle(data.title)
+    setTemplateGradient(null)
+    setTemplateThumbnailUrl(data.thumbnailUrl || null)
+    // Background chosen in the template modal, if any
+    const bg = pendingBgRef.current
+    pendingBgRef.current = null
+    const frames = bg != null ? data.frames.map((f) => ({ ...f, backgroundImage: bg })) : data.frames
+    loadTemplate({ title: data.title, frames })
+    setEditorBackground(bg != null ? bg : undefined)
+    setProjectVisibility('public')
+    refreshVersions()
+  }, [beginSession, loadTemplate, setEditorBackground, setProjectTitle, projectTopic, refreshVersions])
+
+  useEffect(() => {
+    const routeId = templateId || 'new'
+    const session = getSession()
+
+    // Back from presenting: this project is still in the editor (including
+    // any ink the presenter kept), so don't reload it
+    if ((location.state?.fromPresentation || location.state?.keepEditorState) && session.key && session.routeId === routeId && frames.length > 0) {
+      setLoadError(null)
+      setResumeCopy(null)
+      setProjectVisibility(session.visibility || 'public')
+      setTemplateLoaded(true)
+      setIsTemplateLoading(false)
       return
     }
 
-    if (!isUserFilesLoaded) return
-    if (inFlightTemplateRef.current.id === templateId && inFlightTemplateRef.current.promise) return
+    if (routeId === 'new') {
+      // Home already reset the editor; reloading /editor/new starts blank too
+      if (session.routeId !== 'new') createNewProject()
+      beginSession({ routeId: 'new' })
+      const choice = newProjectBgRef.current
+      if (choice) setEditorBackground(choice.background ?? null)
+      try { sessionStorage.removeItem(NEW_PROJECT_BG_KEY) } catch { /* noop */ }
+      setProjectVisibility('public')
+      setTemplateGradient(null)
+      setTemplateLoaded(true)
+      setIsTemplateLoading(false)
+      return
+    }
+
+    if (routeId === 'prezi-demo') {
+      beginSession({ routeId })
+      loadTemplate({ title: 'Prezi Drag & Drop Demo', frames: buildPolishedTemplateFrames('Prezi Drag & Drop Demo', 'Generic') })
+      setTemplateLoaded(true)
+      setIsTemplateLoading(false)
+      return
+    }
+
+    if (!isUserFilesLoaded) {
+      setIsTemplateLoading(true)
+      return
+    }
 
     let cancelled = false
+    setTemplateLoaded(false)
     setIsTemplateLoading(true)
+    setLoadError(null)
+    setResumeCopy(null)
+    // Nothing is saved while loading (no baseline yet)
+    beginSession({ routeId })
 
-    // First, check if this is a saved user file (user file IDs are numeric timestamps)
-    const userFile = getProject(templateId)
-
-    logger.info('EditorPage: Loading templateId:', templateId, 'userFile:', !!userFile)
-
-   if (userFile && Array.isArray(userFile.frames) && userFile.frames.length > 0) {
-      setTemplateLoaded(true)
-      setIsTemplateLoading(false)
-      loadTemplate({ title: userFile.title, frames: userFile.frames })
-      setProjectTitle(userFile.title)
-      setTemplateGradient(userFile.thumbnail || null)
-      setTemplateThumbnailUrl(userFile.thumbnailUrl || null)
-      if ('editorBgImage' in userFile) {
-        setEditorBackground(userFile.editorBgImage)
-      } else {
-        setEditorBackground(undefined)
-      }
-      setCurrentProjectId(userFile.id)
-      try { localStorage.removeItem('adityanta_autosave') } catch (_e) { /* noop */ }
-      return
-    }
-
-    // Not a user file → load template from backend
-    // Clear autosave to prevent stale data
-    localStorage.removeItem('adityanta_autosave')
-
-    const loadFromBackend = async () => {
-      try {
-        logger.info('[TEMPLATE] Calling downloadTemplate for:', templateId)
-        const result = await downloadTemplate(templateId)
-
-        if (cancelled) return
-
-        logger.info('[TEMPLATE] downloadTemplate response:', {
-          success: result?.success,
-          hasS3Url: !!result?.s3_file_url,
-          templateTitle: result?.template?.title,
-          error: result?.error
-        })
-
-        if (!result?.success && result?.error_code === 'DOWNLOAD_LIMIT_EXCEEDED') {
-          logger.warn('[TEMPLATE] Download limit response ignored, attempting to parse template')
-        } else if (!result?.success && !result?.s3_file_url && !result?.template) {
-          logger.error('[TEMPLATE] Download failed:', result?.error)
-          return null
-        }
-
-        // Backend returns s3_file_url → fetch PPTX from S3 and parse it
-        if (result.s3_file_url) {
-          logger.info('[TEMPLATE] Fetching PPTX from S3...')
-          const pptxResponse = await fetch(result.s3_file_url)
-
-          if (cancelled) return
-
-          if (!pptxResponse.ok) {
-            logger.error('[TEMPLATE] S3 fetch failed:', pptxResponse.status)
-            return null
-          }
-
-          const pptxBlob = await pptxResponse.blob()
-          logger.info('[TEMPLATE] PPTX blob size:', pptxBlob.size)
-
-          if (pptxBlob.size === 0) {
-            logger.error('[TEMPLATE] Empty PPTX blob!')
-            return null
-          }
-
-          // Use the real template title from backend for the filename so parsePPTX gets a meaningful fallback
-          const realTitle = result.template?.title || 'Presentation'
-          const pptxFile = new File([pptxBlob], `${realTitle}.pptx`, {
-            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-          })
-
-          logger.info('[TEMPLATE] Parsing PPTX...')
-          const parsed = await parsePPTX(pptxFile)
-          logger.info('[TEMPLATE] Parsed! Title:', parsed.title, 'Slides:', parsed.frames?.length)
-
-          if (cancelled) return
-
-          if (parsed.frames && parsed.frames.length > 0) {
-            // Prefer backend title over PPTX metadata title (which is often generic)
-            return {
-              title: result.template?.title || parsed.title || 'Presentation',
-              frames: parsed.frames,
-              topic: result.template?.topic || null,
-              gradient: null,
-              thumbnailUrl: result.template?.thumbnail_url || null
-            }
-          }
-        }
-
-        return null
-      } catch (error) {
-        logger.error('[TEMPLATE] Error loading template:', error)
-        return null
-      }
-    }
-
-    const requestPromise = loadFromBackend().then((templateData) => {
+    const finish = () => {
       if (cancelled) return
-
       setTemplateLoaded(true)
       setIsTemplateLoading(false)
-
-      if (templateData) {
-        // Successfully loaded template from backend
-        const parsedFrames = (templateData.frames && templateData.frames.length > 0)
-          ? templateData.frames
-          : buildPolishedTemplateFrames(
-              templateData.title,
-              templateData.topic || projectTopic || 'Generic'
-            )
-        console.log('[TEMPLATE] SUCCESS - Loading polished deck:', parsedFrames.length, 'slides')
-        templateRuntimeCache.set(templateId, { ...templateData, frames: parsedFrames })
-        setProjectTitle(templateData.title)
-        setTemplateGradient(templateData.gradient)
-        setTemplateThumbnailUrl(templateData.thumbnailUrl)
-        // Apply background chosen in modal (if any), otherwise use topic default
-        const bgToApply = pendingBgRef.current
-        pendingBgRef.current = null
-        if (bgToApply !== null) {
-          // Bake the chosen background into every frame
-          const framesWithBg = parsedFrames.map(f => ({ ...f, backgroundImage: bgToApply }))
-          loadTemplate({ title: templateData.title, frames: framesWithBg })
-          setEditorBackground(bgToApply)
-        } else {
-          loadTemplate({ title: templateData.title, frames: parsedFrames })
-          setEditorBackground(undefined)
-        }
-      } else {
-        // Failed to load from backend → create fallback slides
-        console.warn('[TEMPLATE] FALLBACK - Creating placeholder slides')
-        toast.info('Loading template with default layout. Edit to customize!')
-
-        // Find template title from API templates if available
-        const apiTemplate = allTemplates.find(t => t.template_id === templateId)
-        const fallbackTitle = apiTemplate?.title || 'Presentation'
-        const projectTopic = apiTemplate?.topic || 'Generic'
-        const fallbackFrames = buildPolishedTemplateFrames(fallbackTitle, projectTopic)
-
-        setProjectTitle(fallbackTitle)
-        setTemplateGradient(null)
-        setTemplateThumbnailUrl(apiTemplate?.thumbnail_url || null)
-        // Apply background chosen in modal (if any), otherwise use topic default
-        const fallbackBgToApply = pendingBgRef.current
-        pendingBgRef.current = null
-        if (fallbackBgToApply !== null) {
-          const framesWithBg = fallbackFrames.map(f => ({ ...f, backgroundImage: fallbackBgToApply }))
-          loadTemplate({ title: fallbackTitle, frames: framesWithBg })
-          setEditorBackground(fallbackBgToApply)
-        } else {
-          loadTemplate({ title: fallbackTitle, frames: fallbackFrames })
-          setEditorBackground(undefined)
-        }
-      }
-    })
-    inFlightTemplateRef.current = { id: templateId, promise: requestPromise }
-
-    return () => {
-      cancelled = true
-      if (inFlightTemplateRef.current.id === templateId) {
-        inFlightTemplateRef.current = { id: null, promise: null }
-      }
     }
-  }, [templateId, templateLoaded, isUserFilesLoaded, getProject, loadTemplate, downloadTemplate, apiTemplates, projectTopic, toast, setProjectTitle])
+    const fail = (message, kind = 'error') => {
+      if (cancelled) return
+      setLoadError({ message, kind })
+      setIsTemplateLoading(false)
+    }
+
+    // 1. One of the user's projects
+    if (getProject(routeId)) {
+      loadProject(routeId)
+        .then((project) => {
+          if (cancelled) return
+          if (!project?.frames?.length) { fail('This project could not be opened — its saved data looks damaged.'); return }
+          applyLoadedProject(project)
+          finish()
+        })
+        .catch((e) => fail(e?.message || 'This project could not be opened.'))
+      return () => { cancelled = true }
+    }
+    if (trashedItems.some((m) => String(m.id) === routeId)) {
+      fail('This project is in the Trash.', 'trashed')
+      return () => { cancelled = true }
+    }
+    if (/^((uploaded|shared)_\d+|p[0-9a-z]{9,}|\d{11,})$/.test(routeId)) {
+      fail('This project is not saved in this browser. It may have been deleted, or the browser data was cleared.', 'missing')
+      return () => { cancelled = true }
+    }
+
+    // 2. A Store template — offer to continue an existing copy
+    const copy = skipCopyCheckRef.current === routeId ? null : findTemplateCopy(routeId)
+    if (copy) {
+      setResumeCopy(copy)
+      setIsTemplateLoading(false)
+      return () => { cancelled = true }
+    }
+
+    fetchStoreTemplate(routeId)
+      .then((data) => {
+        if (cancelled) return
+        applyStoreTemplate(routeId, data)
+        finish()
+      })
+      .catch((e) => {
+        logger.error('[TEMPLATE] load failed', e)
+        fail(e?.message || 'The template could not be loaded.', 'template')
+      })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId, isUserFilesLoaded, loadAttempt])
+
+  const retryLoad = useCallback(() => {
+    templateRuntimeCache.delete(templateId)
+    setLoadAttempt((n) => n + 1)
+  }, [templateId])
+
+  const startNewTemplateCopy = useCallback(() => {
+    skipCopyCheckRef.current = templateId
+    setResumeCopy(null)
+    setLoadAttempt((n) => n + 1)
+  }, [templateId])
+
+  const applyStarterLayout = useCallback(() => {
+    const apiTemplate = allTemplates.find((t) => t.template_id === templateId)
+    const title = apiTemplate?.title || 'Presentation'
+    applyStoreTemplate(templateId, { title, frames: buildPolishedTemplateFrames(title, apiTemplate?.topic || 'Generic'), topic: apiTemplate?.topic || null, thumbnailUrl: apiTemplate?.thumbnail_url || null })
+    setLoadError(null)
+    setTemplateLoaded(true)
+    setIsTemplateLoading(false)
+  }, [allTemplates, templateId, applyStoreTemplate])
 
 
   // Keyboard shortcuts - PowerPoint-like
@@ -1459,14 +1532,15 @@ const EditorPage = () => {
         e.preventDefault()
         const nudgeAmount = e.shiftKey ? 10 : 1 // Hold Shift for larger nudge
         const element = elements.find(el => el.id === selectedElementId)
-        if (element) {
+        if (element && !element.locked) {
           let newX = element.x
           let newY = element.y
           if (e.key === 'ArrowUp') newY -= nudgeAmount
           if (e.key === 'ArrowDown') newY += nudgeAmount
           if (e.key === 'ArrowLeft') newX -= nudgeAmount
           if (e.key === 'ArrowRight') newX += nudgeAmount
-          moveElement(selectedElementId, Math.max(0, newX), Math.max(0, newY))
+          // Like PowerPoint, objects may sit partly off the slide
+          moveElement(selectedElementId, newX, newY)
         }
       }
 
@@ -1486,17 +1560,13 @@ const EditorPage = () => {
 
       // Text formatting shortcuts (only when a text element is selected)
       if (selectedElement?.type === 'text' && !editingTextId) {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        const k = e.key?.toLowerCase()
+        if ((e.ctrlKey || e.metaKey) && (k === 'b' || k === 'i' || k === 'u')) {
           e.preventDefault()
-          updateElement(selectedElementId, { fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'i') {
-          e.preventDefault()
-          updateElement(selectedElementId, { fontStyle: selectedElement.fontStyle === 'italic' ? 'normal' : 'italic' })
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
-          e.preventDefault()
-          updateElement(selectedElementId, { textDecoration: selectedElement.textDecoration === 'underline' ? 'none' : 'underline' })
+          const f = readBoxFormatting(selectedElementId)
+          if (k === 'b') applyBoxFormatting(selectedElementId, { fontWeight: f.fontWeight === 'bold' ? 'normal' : 'bold' })
+          if (k === 'i') applyBoxFormatting(selectedElementId, { fontStyle: f.fontStyle === 'italic' ? 'normal' : 'italic' })
+          if (k === 'u') applyBoxFormatting(selectedElementId, { textDecoration: f.textDecoration === 'underline' ? 'none' : 'underline' })
         }
       }
 
@@ -1511,8 +1581,8 @@ const EditorPage = () => {
       // Present (F5)
       if (e.key === 'F5') {
         e.preventDefault()
-        const idx = frames.findIndex(f => f.id === activeFrameId)
-        navigate(`/present/${templateId || 'new'}`, { state: { startSlide: Math.max(0, idx) } })
+        // F5 = from the beginning, Shift+F5 = from the current slide (PowerPoint)
+        presentRef.current?.(e.shiftKey)
       }
 
       // Show shortcuts modal
@@ -1635,107 +1705,74 @@ const EditorPage = () => {
     return RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)]
   }, [])
 
-  // Save project to Your Files
-  const handleSaveProject = useCallback(() => {
-    setIsSaving(true)
-    try {
-      const projectData = {
-        id: currentProjectId,
-        title: projectTitle || 'Untitled Presentation',
-        frames: frames,
-        templateId: templateId,
-        thumbnail: templateGradient || 'from-blue-400 to-purple-600',
-        editorBgImage: editorBgImage,
+  // ---------------------------------------------------------------------------
+  // Saving (see useProjectAutosave): automatic, plus Ctrl+S / Save button
+  // ---------------------------------------------------------------------------
+  const coverTimerRef = useRef(null)
+  const lastCoverAtRef = useRef(0)
+  const scheduleCover = useCallback((id, snap) => {
+    // Small image of the first slide for the Your Files card (throttled)
+    clearTimeout(coverTimerRef.current)
+    const wait = Math.max(1500, 20000 - (Date.now() - lastCoverAtRef.current))
+    coverTimerRef.current = setTimeout(async () => {
+      lastCoverAtRef.current = Date.now()
+      const first = snap.frames?.[0]
+      if (!first) return
+      try {
+        const { renderSlideToCanvas } = await import('../../components/Slide/rasterize')
+        const canvas = await renderSlideToCanvas(first, { width: 480, height: 270, header: snap.header, editorBackground: snap.editorBgImage })
+        await updateProjectSummary(id, { cover: canvas.toDataURL('image/jpeg', 0.72) })
+      } catch (e) {
+        logger.warn('Cover thumbnail failed', e)
       }
-      const savedFile = saveToUserFiles(projectData)
-      if (savedFile && savedFile.id) {
-        setCurrentProjectId(savedFile.id)
-        // Mark template as loaded so that the URL change below does NOT cause
-        // the load-on-mount effect to re-run and reset our current editor
-        // state (history, frames, active frame, etc.).
-        setTemplateLoaded(true)
-        // Sync the URL to the saved project's id. Without this, a project
-        // saved from /editor/new stays on that URL; reloading or returning
-        // via browser back loses the work.
-        const savedIdStr = String(savedFile.id)
-        if (templateId !== savedIdStr) {
-          navigate(`/editor/${savedIdStr}`, { replace: true })
-        }
-      }
-      setLastSavedTime(new Date())
-      setHasUnsavedChanges(false)
-      toast.success('Project saved to Your Files!')
-      return savedFile
-    } catch (error) {
-      logger.error('Save error:', error)
-      toast.error('Failed to save project')
-      return null
-    } finally {
-      setIsSaving(false)
+    }, wait)
+  }, [updateProjectSummary])
+  useEffect(() => () => clearTimeout(coverTimerRef.current), [])
+
+  const autosave = useProjectAutosave({
+    ready: templateLoaded && !isTemplateLoading && !loadError && !resumeCopy,
+    state: { frames, title: projectTitle, header, editorBgImage, visibility: projectVisibility },
+    getSession,
+    updateSession,
+    saveProject: saveToUserFiles,
+    onFirstSave: (id) => {
+      // The URL now points at the saved project (reload / back keep working)
+      updateSession({ routeId: id })
+      navigate(`/editor/${id}`, { replace: true, state: { keepEditorState: true } })
+    },
+    onSaved: (summary, snap) => scheduleCover(summary.id, snap),
+  })
+
+  const handleSaveProject = useCallback(async () => {
+    const ok = await autosave.flush()
+    if (ok) {
+      if (getSession().projectId) toast.success('All changes saved')
+      else toast.info('Nothing to save yet — your changes are saved automatically as you edit')
+    } else {
+      toast.error(autosave.error || 'Could not save. Your changes are still here — try again.')
     }
-  }, [currentProjectId, projectTitle, frames, templateId, templateGradient, editorBgImage, saveToUserFiles, toast, navigate])
+    return ok
+  }, [autosave, getSession, toast])
   // Keep saveProjectRef always pointing to the latest version (used by keyboard shortcut effect above)
   saveProjectRef.current = handleSaveProject
 
-  // Back / Home navigation — always save first so no work is lost
-  const handleGoHome = useCallback(() => {
-    try {
-      handleSaveProject()
-    } catch (e) {
-      logger.error('Pre-navigation save failed', e)
-    }
+  // Home: finish saving first so no work is lost
+  const handleGoHome = useCallback(async () => {
+    await autosave.flush().catch(() => false)
     navigate('/home')
-  }, [handleSaveProject, navigate])
+  }, [autosave, navigate])
 
-  // Debounced auto-save: triggers 30s after the last frame change.
-  // Previous implementation broke because it wrote ALL user files to
-  // localStorage every 4s, exceeding the ~5MB quota. This new version
-  // uses the existing handleSaveProject() which writes to IndexedDB
-  // (essentially unlimited storage). We suppress the toast for auto-saves.
-  useEffect(() => {
-    // Don't auto-save until the project has been loaded / is ready.
-    if (!frames || frames.length === 0) return
-    // Don't auto-save while a template is still loading.
-    if (isTemplateLoading) return
-
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-
-    autoSaveTimerRef.current = setTimeout(() => {
-      try {
-        const projectData = {
-          id: currentProjectIdRef.current,
-          title: projectTitleRef.current || 'Untitled Presentation',
-          frames: frames,
-          templateId: templateId,
-          thumbnail: templateGradient || 'from-blue-400 to-purple-600',
-          editorBgImage: editorBgImage,
-        }
-        const savedFile = saveToUserFiles(projectData)
-        if (savedFile && savedFile.id) {
-          setCurrentProjectId(savedFile.id)
-          setTemplateLoaded(true)
-          const savedIdStr = String(savedFile.id)
-          if (templateId !== savedIdStr) {
-            navigate(`/editor/${savedIdStr}`, { replace: true })
-          }
-        }
-        setLastSavedTime(new Date())
-        setHasUnsavedChanges(false)
-        logger.info('Auto-saved project')
-      } catch (error) {
-        logger.error('Auto-save failed:', error)
-      }
-    }, 30000) // 30 seconds after last change
-
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-    }
-  }, [frames, templateId, templateGradient, editorBgImage, saveToUserFiles, navigate, isTemplateLoading])
-
-  const handlePresent = () => {
-    const idx = frames.findIndex(f => f.id === activeFrameId)
-    navigate(`/present/${templateId || 'new'}`, { state: { startSlide: Math.max(0, idx) } })
+  // Present: save first, then open the presentation of this project.
+  // `fromCurrent` starts at the selected slide (like PowerPoint's Shift+F5).
+  const startPresentation = async (fromCurrent = true) => {
+    const idx = fromCurrent ? Math.max(0, frames.findIndex(f => f.id === activeFrameId)) : 0
+    await autosave.flush().catch(() => false)
+    const session = getSession()
+    const id = session.projectId || templateId || 'new'
+    navigate(`/present/${id}`, { state: { startSlide: idx, returnTo: `/editor/${session.routeId || id}` } })
   }
+  presentRef.current = startPresentation
+  const handlePresent = () => startPresentation(true)
 
   // Pan / Wheel State
   const isTransitioningRef = useRef(false);
@@ -1743,123 +1780,57 @@ const EditorPage = () => {
   const [isNavigating, setIsNavigating] = useState(false); // Used to disable CSS transition
 
   const handlePanStart = (e) => {
-    // middle click (button 1) or isPanning (hand tool) always pan
-    // left-click drag only pans when nothing is selected
-    // Stylus (pointerType === 'pen') fires PointerEvents; the synthetic
-    // MouseEvent from the browser usually works, but touch-action:none on
-    // the canvas + dual listeners below make it reliable.
+    // Middle button, the hand tool, or a left-drag on empty canvas pans
     const canPan = e.button === 1 || isPanning || (!selectedElementId && e.button === 0)
-    if (canPan) {
-      e.preventDefault()
-      setIsDraggingPan(true)
-      setIsNavigating(true)
-      setPanStart({
-        x: e.clientX,
-        y: e.clientY,
-        cameraPanX: camera.panX,
-        cameraPanY: camera.panY,
-      })
+    if (!canPan) return
+    e.preventDefault()
+    cancelCameraAnim()
+    const startCam = cameraLiveRef.current
+    const startX = e.clientX
+    const startY = e.clientY
+    setIsDraggingPan(true)
+    const onMove = (mv) => {
+      moveCamera({ ...startCam, panX: startCam.panX + (mv.clientX - startX) / startCam.zoom, panY: startCam.panY + (mv.clientY - startY) / startCam.zoom })
     }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      setIsDraggingPan(false)
+      moveCamera(cameraLiveRef.current, { commit: 'now' })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
-  const handleWheel = (e) => {
-    // React's onWheel is passive, so preventDefault here is a best-effort
-    // (we also attach a native non-passive listener below for real prevention).
-    if (showVersionHistory || showShortcutsModal || showSlideMaster || showAnimationPanel) return;
-
-    // Disable transition — smooth fast response while wheeling
-    setIsNavigating(true);
-    if (transitionTimeoutRef.current) clearTimeout(transitionTimeoutRef.current);
-    transitionTimeoutRef.current = setTimeout(() => setIsNavigating(false), 120);
-
-    if (e.ctrlKey || e.metaKey) {
-      // Zoom always works regardless of selection
-      // Trackpads emit many high-frequency events with small deltaY values (usually < 40).
-      // Mouse wheels emit discrete ticks (usually >= 100).
-      const isTrackpad = Math.abs(e.deltaY) < 40;
-      const ZOOM_SENSITIVITY = isTrackpad ? 0.024 : 0.0025;
-      
-      let rect = null;
-      let screenX = 0;
-      let screenY = 0;
-      if (canvasRef.current) {
-        rect = canvasRef.current.getBoundingClientRect();
-        screenX = e.clientX - rect.left;
-        screenY = e.clientY - rect.top;
-      }
-      const originX = worldBounds.width / 2;
-      const originY = worldBounds.height / 2;
-
-      setCamera(prev => {
-        const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
-        const newZoom = Math.min(Math.max(0.05, prev.zoom * factor), 40.0);
-        
-        if (rect) {
-          return {
-            zoom: newZoom,
-            panX: prev.panX + (screenX - originX) * (1 / newZoom - 1 / prev.zoom),
-            panY: prev.panY + (screenY - originY) * (1 / newZoom - 1 / prev.zoom)
-          };
-        }
-        return { ...prev, zoom: newZoom };
-      });
-    } else {
-      // Pan — only when no element is selected
-      if (selectedElementId) return;
-      setCamera(prev => ({
-        ...prev,
-        panX: prev.panX - e.deltaX / prev.zoom,
-        panY: prev.panY - e.deltaY / prev.zoom,
-      }));
-    }
-  }
-
+  // Wheel: Ctrl/⌘ + wheel or a trackpad pinch zooms around the pointer; a
+  // plain wheel / two-finger scroll pans (also while something is selected).
+  // Native non-passive listener, so the browser never zooms/scrolls the page.
+  const wheelBlockedRef = useRef(false)
+  wheelBlockedRef.current = !!(showVersionHistory || showShortcutsModal || showSlideMaster || showAnimationPanel)
   useEffect(() => {
-    const handlePanMove = (e) => {
-      if (!isDraggingPan) return
-      const dx = (e.clientX - panStart.x) / camera.zoom
-      const dy = (e.clientY - panStart.y) / camera.zoom
-
-      setCamera(prev => ({
-        ...prev,
-        panX: panStart.cameraPanX + dx,
-        panY: panStart.cameraPanY + dy
-      }))
-    }
-
-    const handlePanEnd = (e) => {
-      if (e.button !== 1 && e.button !== 0 && !isPanning) return; // allow middle or left click to end pan
-      if (isDraggingPan) {
-        setIsDraggingPan(false)
-        setIsNavigating(false)
-      }
-    }
-
-    window.addEventListener('mousemove', handlePanMove)
-    window.addEventListener('mouseup', handlePanEnd)
-    // Pointer events for stylus / pen-tablet support
-    window.addEventListener('pointermove', handlePanMove)
-    window.addEventListener('pointerup', handlePanEnd)
-    return () => {
-      window.removeEventListener('mousemove', handlePanMove)
-      window.removeEventListener('mouseup', handlePanEnd)
-      window.removeEventListener('pointermove', handlePanMove)
-      window.removeEventListener('pointerup', handlePanEnd)
-    }
-  }, [isDraggingPan, panStart, camera.zoom, isPanning])
-
-  // Attach a NATIVE non-passive wheel listener so we can preventDefault on
-  // all wheel events (blocking ctrl/meta+wheel pinch-zoom and 2-finger trackpad horizontal history swipe navigation).
-  // React's synthetic onWheel is passive by default, which means preventDefault there is a no-op.
-  // This native listener runs first and stops the default browser scroll/swipe actions.
-  useEffect(() => {
-    const el = canvasRef.current
-    if (!el) return
-    const blockPageZoom = (e) => {
+    const el = viewportRef.current
+    if (!el) return undefined
+    const onWheel = (e) => {
       e.preventDefault()
+      if (wheelBlockedRef.current) return
+      cancelCameraAnim()
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
+      const dx = e.deltaX * unit
+      const dy = e.deltaY * unit
+      if (e.ctrlKey || e.metaKey) {
+        const rect = el.getBoundingClientRect()
+        // pinch gestures send small deltas; mouse wheels send ~100 per notch
+        const k = Math.abs(dy) < 50 ? 0.012 : 0.0018
+        moveCamera((c) => zoomAround(c, clampZoom(c.zoom * Math.exp(-dy * k)), e.clientX - rect.left, e.clientY - rect.top))
+      } else {
+        moveCamera((c) => ({ ...c, panX: c.panX - dx / c.zoom, panY: c.panY - dy / c.zoom }))
+      }
     }
-    el.addEventListener('wheel', blockPageZoom, { passive: false })
-    return () => el.removeEventListener('wheel', blockPageZoom)
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Handle placeholder click - clear placeholder text when editing starts
@@ -1873,6 +1844,16 @@ const EditorPage = () => {
 
   const handleElementClick = (element, e) => {
     e.stopPropagation()
+    // #03 — a second click on a selected text box places the caret there
+    // (then click-and-drag selects any range of text), like PowerPoint
+    const wasSelected = selectedElementId === element.id
+    if (wasSelected && !didElementDragRef.current && !element.locked && editingTextId !== element.id
+      && (element.type === 'text' || element.type === 'shape') && e.detail === 1) {
+      pendingCaretRef.current = { x: e.clientX, y: e.clientY }
+      if (element.type === 'text') handlePlaceholderEdit(element)
+      else setEditingTextId(element.id)
+      return
+    }
     setSelectedElementId(element.id)
     setRightPanelTab('properties')
     // Auto-expand the right panel when something is selected (context-aware)
@@ -1890,6 +1871,12 @@ const EditorPage = () => {
 
   const handleElementDoubleClick = (element, e) => {
     e.stopPropagation()
+    if (element.locked) {
+      setSelectedElementId(element.id)
+      toast.info('This object is locked. Right-click → Unlock to edit it.')
+      return
+    }
+    pendingCaretRef.current = { x: e.clientX, y: e.clientY, word: true }
     if (element.type === 'text') {
       handlePlaceholderEdit(element)
     } else if (element.type === 'shape' || element.type === 'icon') {
@@ -1928,24 +1915,13 @@ const EditorPage = () => {
     if (e.target !== e.currentTarget && !e.target.classList.contains('canvas-area')) return
     e.preventDefault()
     e.stopPropagation()
-    // Convert screen coords to canvas-local coords
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
+    const world = clientToWorld(e.clientX, e.clientY)
+    if (!world) return
     // Find the active frame layout to compute position inside the frame
     const layout = frameMapLayout.find(f => f.id === activeFrameId)
     if (!layout) return
-    // Compute world coords from screen coords
-    const viewportW = rect.width
-    const viewportH = rect.height
-    const originX = worldBounds.width / 2
-    const originY = worldBounds.height / 2
-    // Reverse the transform: screen -> world
-    const screenX = e.clientX - rect.left
-    const screenY = e.clientY - rect.top
-    // The transform is: scale(zoom) translate(panX, panY) with origin at center
-    // worldPt = (screenPt - viewportCenter) / zoom + worldOrigin - pan
-    const worldX = (screenX - viewportW / 2) / camera.zoom + originX - camera.panX
-    const worldY = (screenY - viewportH / 2) / camera.zoom + originY - camera.panY
+    const worldX = world.x
+    const worldY = world.y
     // Convert world coords to element coords within the active frame
     const frameScale = layout.width / SLIDE_WIDTH
     const elX = Math.max(10, Math.min(SLIDE_WIDTH - 410, (worldX - layout.x) / frameScale))
@@ -1965,129 +1941,135 @@ const EditorPage = () => {
   // #02 — Track original z-index of dragged frame for proper layering
   const [draggedFrameZBoost, setDraggedFrameZBoost] = useState(null)
 
-  const handleFrameDragStart = (e, frameBox) => {
-    if (e.button !== 0) return // only left click
-    e.stopPropagation()
-    didFrameDragRef.current = false
-    setDraggingFrameId(frameBox.id)
-    setDraggedFrameZBoost(frameBox.id) // #02 — boost z-index while dragging
-    setFrameDragStart({
-      x: e.clientX,
-      y: e.clientY,
-      frameX: frameBox.x,
-      frameY: frameBox.y,
-      frameW: frameBox.width,
-      frameH: frameBox.height
-    })
+  const rafThrottle = (fn) => {
+    let raf = 0
+    let lastArgs = null
+    const run = () => { raf = 0; fn(...lastArgs) }
+    const call = (...args) => { lastArgs = args; if (!raf) raf = requestAnimationFrame(run) }
+    call.flush = () => { if (raf) { cancelAnimationFrame(raf); run() } }
+    return call
   }
 
-  const handleFrameDragMove = useCallback((e) => {
-    if (!draggingFrameId) return
-    const deltaX = (e.clientX - frameDragStart.x) / camera.zoom
-    const deltaY = (e.clientY - frameDragStart.y) / camera.zoom
-    // Mark as real drag if moved more than 4px
-    if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
-      didFrameDragRef.current = true
-    }
-    updateFrameLayout(draggingFrameId, {
-      x: Math.max(DRAG_L, Math.min(frameDragStart.frameX + deltaX, DRAG_R - frameDragStart.frameW)),
-      y: Math.max(DRAG_T, Math.min(frameDragStart.frameY + deltaY, DRAG_B - frameDragStart.frameH)),
-      width: frameDragStart.frameW,
-      height: frameDragStart.frameH
+  const stopTextEditingFocus = () => {
+    const ae = document.activeElement
+    if (ae && ae !== document.body && typeof ae.blur === 'function' && ae.closest?.('[data-frame]')) ae.blur()
+  }
+
+  // Drag a slide: starts after 4px of movement, follows the pointer 1:1 (one
+  // layout update per animation frame), and never selects text.
+  const handleFrameDragStart = (e, frameBox) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    if (e.target.closest?.('[contenteditable="true"], input, textarea, select, button')) return
+    stopTextEditingFocus()
+    e.preventDefault()
+    cancelCameraAnim()
+    didFrameDragRef.current = false
+    const startX = e.clientX
+    const startY = e.clientY
+    const zoom = cameraLiveRef.current.zoom
+    let dragging = false
+    const apply = rafThrottle((x, y) => {
+      updateFrameLayout(frameBox.id, { x, y, width: frameBox.width, height: frameBox.height })
     })
-  }, [draggingFrameId, frameDragStart, camera.zoom, updateFrameLayout])
+    const onMove = (mv) => {
+      if (!dragging) {
+        if (Math.hypot(mv.clientX - startX, mv.clientY - startY) < 4) return
+        dragging = true
+        didFrameDragRef.current = true
+        setDraggingFrameId(frameBox.id)
+        setDraggedFrameZBoost(frameBox.id)
+      }
+      const x = Math.max(DRAG_L, Math.min(frameBox.x + (mv.clientX - startX) / zoom, DRAG_R - frameBox.width))
+      const y = Math.max(DRAG_T, Math.min(frameBox.y + (mv.clientY - startY) / zoom, DRAG_B - frameBox.height))
+      apply(x, y)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      apply.flush()
+      if (dragging) {
+        setDraggingFrameId(null)
+        setDraggedFrameZBoost(null)
+        commitHistory()
+        // let the click that follows this pointerup select the slide, then
+        // forget the drag so a later double-click still opens it
+        setTimeout(() => { didFrameDragRef.current = false }, 300)
+      }
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }
 
-  const handleFrameDragEnd = useCallback(() => {
-    setDraggingFrameId(null)
-    setDraggedFrameZBoost(null) // #02 — restore z-index on drop
-  }, [])
-
+  // Resize a slide from any handle, in the overview or while it is open,
+  // keeping 16:9. #23 — no practical minimum size.
   const handleFrameResizeStart = (e, handle, frameBox) => {
     if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
+    cancelCameraAnim()
+    const startX = e.clientX
+    const startY = e.clientY
+    const zoom = cameraLiveRef.current.zoom
+    const MIN_W = 16
+    const MIN_H = 9
+    const aspect = 16 / 9
     setIsResizingFrame(true)
     setFrameResizeHandle(handle)
-    setFrameResizeStart({
-      x: e.clientX,
-      y: e.clientY,
-      frameX: frameBox.x,
-      frameY: frameBox.y,
-      frameW: frameBox.width,
-      frameH: frameBox.height,
-      frameId: frameBox.id,
-    })
+    const apply = rafThrottle((box) => updateFrameLayout(frameBox.id, box))
+    const onMove = (mv) => {
+      const dx = (mv.clientX - startX) / zoom
+      const dy = (mv.clientY - startY) / zoom
+      let w = frameBox.width
+      let h = frameBox.height
+      const horiz = handle.includes('e') || handle.includes('w')
+      const vert = handle.includes('n') || handle.includes('s')
+      const dw = handle.includes('e') ? dx : handle.includes('w') ? -dx : 0
+      const dh = handle.includes('s') ? dy : handle.includes('n') ? -dy : 0
+      if (horiz && vert) {
+        // corner: follow whichever direction moved more (in 16:9 terms)
+        if (Math.abs(dw) >= Math.abs(dh) * aspect) { w = frameBox.width + dw; h = w / aspect } else { h = frameBox.height + dh; w = h * aspect }
+      } else if (horiz) { w = frameBox.width + dw; h = w / aspect } else { h = frameBox.height + dh; w = h * aspect }
+      if (w < MIN_W) { w = MIN_W; h = w / aspect }
+      if (h < MIN_H) { h = MIN_H; w = h * aspect }
+      // anchor the opposite edge / corner; edge handles keep the centre line
+      let x = frameBox.x
+      let y = frameBox.y
+      if (handle.includes('w')) x = frameBox.x + frameBox.width - w
+      else if (!horiz) x = frameBox.x + (frameBox.width - w) / 2
+      if (handle.includes('n')) y = frameBox.y + frameBox.height - h
+      else if (!vert) y = frameBox.y + (frameBox.height - h) / 2
+      apply({ x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, width: Math.round(w * 100) / 100, height: Math.round(h * 100) / 100 })
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      apply.flush()
+      setIsResizingFrame(false)
+      setFrameResizeHandle(null)
+      commitHistory()
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
-  const handleFrameResizeMove = useCallback((e) => {
-    if (!isResizingFrame || !frameResizeHandle) return
-    const dx = (e.clientX - frameResizeStart.x) / camera.zoom
-    const dy = (e.clientY - frameResizeStart.y) / camera.zoom
-
-    // Minimum frame dimensions to keep content legible (16:9 ≥ 160×90)
-    const MIN_W = 80
-    const MIN_H = 45
-    const aspect = 16 / 9
-
-    let x = frameResizeStart.frameX
-    let y = frameResizeStart.frameY
-    let w = frameResizeStart.frameW
-    let h = frameResizeStart.frameH
-
-    if (frameResizeHandle.includes('e')) w = Math.max(MIN_W, w + dx)
-    if (frameResizeHandle.includes('s')) h = Math.max(MIN_H, h + dy)
-    if (frameResizeHandle.includes('w')) {
-      const d = Math.min(dx, w - MIN_W)
-      x = x + d; w = w - d
-    }
-    if (frameResizeHandle.includes('n')) {
-      const d = Math.min(dy, h - MIN_H)
-      y = y + d; h = h - d
-    }
-
-    // Enforce 16:9 aspect ratio — choose constraining axis based on handle direction
-    const isHoriz = frameResizeHandle.includes('e') || frameResizeHandle.includes('w')
-    const isVert  = frameResizeHandle.includes('n') || frameResizeHandle.includes('s')
-    if (isHoriz && isVert) {
-      // Diagonal: drive by whichever delta is larger
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        h = w / aspect
-      } else {
-        w = h * aspect
-      }
-    } else if (isHoriz) {
-      h = w / aspect
-    } else {
-      w = h * aspect
-    }
-
-    // Secondary floor: after ratio enforcement both dims must still satisfy minimum
-    if (w < MIN_W) { w = MIN_W; h = w / aspect }
-    if (h < MIN_H) { h = MIN_H; w = h * aspect }
-
-    // Clamp to expanded free-drag bounds (not the small background rectangle).
-    // This lets users position and resize frames anywhere in the generous
-    // working area instead of being constrained to the initial Prezi layout.
-    x = Math.max(DRAG_L, x); y = Math.max(DRAG_T, y)
-    w = Math.min(w, DRAG_R - x); h = Math.min(h, DRAG_B - y)
-    updateFrameLayout(frameResizeStart.frameId, { x, y, width: Math.round(w), height: Math.round(h) })
-  }, [isResizingFrame, frameResizeHandle, frameResizeStart, camera.zoom, updateFrameLayout])
-
-  const handleFrameResizeEnd = useCallback(() => {
-    setIsResizingFrame(false)
-    setFrameResizeHandle(null)
-    commitHistory()
-  }, [commitHistory])
-
-
   const dragPendingRef = useRef(null)
+  const didElementDragRef = useRef(false)
   const DRAG_THRESHOLD = 4 // pixels before drag actually starts
 
   const handleDragStart = (e, element) => {
     if (editingTextId === element.id) return
     e.stopPropagation()
+    if (e.button !== 0) return
+    stopTextEditingFocus()
+    e.preventDefault()
     // Store pending drag info — actual drag starts only after threshold
     dragPendingRef.current = { x: e.clientX, y: e.clientY, element }
+    didElementDragRef.current = false
     setIsDragPending(true)
     setDragStart({ x: e.clientX, y: e.clientY })
     setElementStart({ x: element.x, y: element.y })
@@ -2099,6 +2081,7 @@ const EditorPage = () => {
       const dx = e.clientX - dragPendingRef.current.x
       const dy = e.clientY - dragPendingRef.current.y
       if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+        didElementDragRef.current = true
         setIsDragging(true)
         setSelectedElementId(dragPendingRef.current.element.id)
       }
@@ -2106,7 +2089,7 @@ const EditorPage = () => {
     }
     if (!isDragging || !selectedElementId) return
 
-    const scaleFactor = camera.zoom * (activeFrameLayout.width / SLIDE_WIDTH);
+    const scaleFactor = cameraLiveRef.current.zoom * (activeFrameLayout.width / SLIDE_WIDTH);
     const deltaX = (e.clientX - dragStart.x) / scaleFactor;
     const deltaY = (e.clientY - dragStart.y) / scaleFactor;
 
@@ -2114,7 +2097,7 @@ const EditorPage = () => {
       Math.max(0, elementStart.x + deltaX),
       Math.max(0, elementStart.y + deltaY)
     )
-  }, [isDragging, selectedElementId, dragStart, elementStart, camera.zoom, activeFrameLayout.width, moveElement, setSelectedElementId])
+  }, [isDragging, selectedElementId, dragStart, elementStart, activeFrameLayout.width, moveElement, setSelectedElementId])
 
   const handleDragEnd = useCallback(() => {
     dragPendingRef.current = null
@@ -2134,39 +2117,46 @@ const EditorPage = () => {
       width: element.width,
       height: element.height,
       elemX: element.x,
-      elemY: element.y
+      elemY: element.y,
+      // pictures keep their proportions from a corner, like PowerPoint
+      keepRatio: ['image', 'icon', 'video', 'chart'].includes(element.type),
     })
   }
 
   const handleResizeMove = useCallback((e) => {
     if (!isResizing || !selectedElementId || !resizeHandle) return
 
-    const scaleFactor = camera.zoom * (activeFrameLayout.width / SLIDE_WIDTH);
+    const scaleFactor = cameraLiveRef.current.zoom * (activeFrameLayout.width / SLIDE_WIDTH);
     const deltaX = (e.clientX - resizeStart.x) / scaleFactor;
     const deltaY = (e.clientY - resizeStart.y) / scaleFactor;
 
-    let newWidth = resizeStart.width
-    let newHeight = resizeStart.height
-    let newX = resizeStart.elemX
-    let newY = resizeStart.elemY
-
-    if (resizeHandle.includes('e')) {
-      newWidth = Math.max(50, resizeStart.width + deltaX)
+    const MIN = 10
+    const w0 = resizeStart.width
+    const h0 = resizeStart.height
+    let newWidth = w0
+    let newHeight = h0
+    if (resizeHandle.includes('e')) newWidth = w0 + deltaX
+    if (resizeHandle.includes('w')) newWidth = w0 - deltaX
+    if (resizeHandle.includes('s')) newHeight = h0 + deltaY
+    if (resizeHandle.includes('n')) newHeight = h0 - deltaY
+    // Corner + Shift (or a picture's corner) keeps the proportions, like PowerPoint
+    const corner = resizeHandle.length === 2
+    if (corner && (e.shiftKey || resizeStart.keepRatio) && w0 > 0 && h0 > 0) {
+      const sx = newWidth / w0
+      const sy = newHeight / h0
+      const s = Math.max(MIN / w0, MIN / h0, Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy)
+      newWidth = w0 * s
+      newHeight = h0 * s
     }
-    if (resizeHandle.includes('w')) {
-      newWidth = Math.max(50, resizeStart.width - deltaX)
-      newX = resizeStart.elemX + deltaX
-    }
-    if (resizeHandle.includes('s')) {
-      newHeight = Math.max(30, resizeStart.height + deltaY)
-    }
-    if (resizeHandle.includes('n')) {
-      newHeight = Math.max(30, resizeStart.height - deltaY)
-      newY = resizeStart.elemY + deltaY
-    }
+    newWidth = Math.max(MIN, newWidth)
+    newHeight = Math.max(MIN, newHeight)
+    // Left / top handles keep the opposite edge where it is (the old code kept
+    // moving the box once the minimum size was reached)
+    const newX = resizeHandle.includes('w') ? resizeStart.elemX + (w0 - newWidth) : resizeStart.elemX
+    const newY = resizeHandle.includes('n') ? resizeStart.elemY + (h0 - newHeight) : resizeStart.elemY
 
     resizeElement(selectedElementId, newWidth, newHeight, newX, newY)
-  }, [isResizing, selectedElementId, resizeHandle, resizeStart, camera.zoom, activeFrameLayout.width, resizeElement])
+  }, [isResizing, selectedElementId, resizeHandle, resizeStart, activeFrameLayout.width, resizeElement])
 
   const handleResizeEnd = useCallback(() => {
     setIsResizing(false)
@@ -2175,38 +2165,33 @@ const EditorPage = () => {
 
   // Mouse move/up for drag and resize
   useEffect(() => {
-    const handleMouseMove = (e) => {
+    const handleMove = (e) => {
       if (isDragPending || isDragging) handleDragMove(e)
       if (isResizing) handleResizeMove(e)
-      if (draggingFrameId) handleFrameDragMove(e)
-      if (isResizingFrame) handleFrameResizeMove(e)
     }
 
-    const handleMouseUp = () => {
+    const handleUp = () => {
       if (isDragPending || isDragging) {
         const didDrag = isDragging
         handleDragEnd()
         if (didDrag) commitHistory()
       }
-      if (isResizing) handleResizeEnd()
-      if (draggingFrameId) { handleFrameDragEnd(); commitHistory() }
-      if (isResizingFrame) handleFrameResizeEnd()
+      if (isResizing) { handleResizeEnd(); commitHistory() }
     }
 
-    if (isDragPending || isDragging || isResizing || draggingFrameId || isResizingFrame) {
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
-      // Pointer events for stylus / pen-tablet support
-      document.addEventListener('pointermove', handleMouseMove)
-      document.addEventListener('pointerup', handleMouseUp)
+    if (isDragPending || isDragging || isResizing) {
+      // pointer events cover mouse, pen and touch
+      document.addEventListener('pointermove', handleMove)
+      document.addEventListener('pointerup', handleUp)
+      document.addEventListener('pointercancel', handleUp)
       return () => {
-        document.removeEventListener('mousemove', handleMouseMove)
-        document.removeEventListener('mouseup', handleMouseUp)
-        document.removeEventListener('pointermove', handleMouseMove)
-        document.removeEventListener('pointerup', handleMouseUp)
+        document.removeEventListener('pointermove', handleMove)
+        document.removeEventListener('pointerup', handleUp)
+        document.removeEventListener('pointercancel', handleUp)
       }
     }
-  }, [isDragPending, isDragging, isResizing, handleDragMove, handleDragEnd, handleResizeMove, handleResizeEnd, handleFrameDragMove, handleFrameDragEnd, draggingFrameId, isResizingFrame, handleFrameResizeMove, handleFrameResizeEnd])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDragPending, isDragging, isResizing, handleDragMove, handleDragEnd, handleResizeMove, handleResizeEnd])
 
   // Handle text content change
   const handleTextChange = (elementId, newContent) => {
@@ -2293,17 +2278,10 @@ const EditorPage = () => {
     draggedTextDataRef.current = null
     window.__draggedTextData = null
 
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-
-    const viewportW = rect.width
-    const viewportH = rect.height
-    const originX = worldBounds.width / 2
-    const originY = worldBounds.height / 2
-    const screenX = clientX - rect.left
-    const screenY = clientY - rect.top
-    const worldX = (screenX - viewportW / 2) / camera.zoom + originX - camera.panX
-    const worldY = (screenY - viewportH / 2) / camera.zoom + originY - camera.panY
+    const world = clientToWorld(clientX, clientY)
+    if (!world) return
+    const worldX = world.x
+    const worldY = world.y
 
     // Find if dropped over a specific frame, or default to active frame
     const layout = frameMapLayout.find(f =>
@@ -2340,7 +2318,11 @@ const EditorPage = () => {
       content: dragData.html || dragData.text,
       x: Math.round(elX),
       y: Math.round(elY),
-      width: Math.max(160, Math.min(550, (dragData.text.length * 14) + 40)),
+      // Use the source element's actual width so the new box matches it exactly.
+      // Fall back to an estimate only if we have no source width.
+      width: dragData.sourceWidth
+        ? Math.round(dragData.sourceWidth)
+        : Math.max(160, Math.min(550, (dragData.text.length * 14) + 40)),
       height: 60,
       fontSize: dragData.formatting?.fontSize || 24,
       fontWeight: dragData.formatting?.fontWeight || 'normal',
@@ -2397,21 +2379,53 @@ const EditorPage = () => {
       e.dataTransfer.effectAllowed = 'move'
     } catch (err) {}
 
+    // Read the computed style of the actual selected DOM node so inline
+    // formatting (bold span, different color, different font-size, etc.)
+    // is captured rather than just the element's container-level defaults.
+    let computedFormatting = {
+      fontSize: element.fontSize,
+      fontWeight: element.fontWeight,
+      fontFamily: element.fontFamily,
+      fontStyle: element.fontStyle,
+      textDecoration: element.textDecoration,
+      color: element.color,
+      textAlign: element.textAlign,
+    }
+    try {
+      // NOTE: CSS transform:scale() does NOT affect getComputedStyle().fontSize.
+      // The browser always reports the declared logical value, not the visual
+      // scaled-down size. So we can read computedStyle directly — no scale
+      // correction needed.
+      let anchorNode = range.startContainer
+      if (anchorNode.nodeType === Node.TEXT_NODE) anchorNode = anchorNode.parentElement
+      if (anchorNode) {
+        const cs = window.getComputedStyle(anchorNode)
+        const parsedSize = parseFloat(cs.fontSize)
+        computedFormatting = {
+          fontSize: Number.isFinite(parsedSize) && parsedSize > 0
+            ? Math.round(parsedSize)
+            : element.fontSize,
+          fontWeight: cs.fontWeight || element.fontWeight,
+          fontFamily: (cs.fontFamily || '').split(',')[0].trim().replace(/['"]/g, '') || element.fontFamily,
+          fontStyle: cs.fontStyle || element.fontStyle,
+          textDecoration: cs.textDecorationLine || element.textDecoration,
+          color: cs.color || element.color,
+          textAlign: cs.textAlign || element.textAlign,
+        }
+      }
+    } catch (_err) {
+      // If anything goes wrong, fall back to element-level props (already set above)
+    }
+
     const dragData = {
       sourceElementId: element.id,
       sourceFrameId: activeFrameId,
       text: selectedText,
       html: selectedHtml,
       range: range.cloneRange(),
-      formatting: {
-        fontSize: element.fontSize,
-        fontWeight: element.fontWeight,
-        fontFamily: element.fontFamily,
-        fontStyle: element.fontStyle,
-        textDecoration: element.textDecoration,
-        color: element.color,
-        textAlign: element.textAlign,
-      }
+      formatting: computedFormatting,
+      // Preserve the source element's width so the new box matches it exactly
+      sourceWidth: element.width,
     }
 
     draggedTextDataRef.current = dragData
@@ -2620,6 +2634,14 @@ const EditorPage = () => {
       case 'audio':
         handleAddAudio()
         break
+      case 'toggleLock':
+        if (selectedElement) {
+          const locked = !selectedElement.locked
+          updateElement(selectedElementId, { locked })
+          commitHistory()
+          toast.info(locked ? 'Locked — it can no longer be moved or resized' : 'Unlocked')
+        }
+        break
       case 'duplicate':
         if (selectedElementId) {
           duplicateElement(selectedElementId)
@@ -2651,81 +2673,6 @@ const EditorPage = () => {
       // Unknown action - safely ignore
     }
     setContextMenu(null)
-  }
-
-  // Helper for roman numerals
-  const getRoman = (num) => {
-    if (num <= 0) return ''
-    const lookup = { M: 1000, CM: 900, D: 500, CD: 400, C: 100, XC: 90, L: 50, XL: 40, X: 10, IX: 9, V: 5, IV: 4, I: 1 }
-    let roman = '', i
-    for (i in lookup) {
-      while (num >= lookup[i]) {
-        roman += i
-        num -= lookup[i]
-      }
-    }
-    return roman
-  }
-
-  // Render text with list formatting
-  const renderTextContent = (element) => {
-    const content = element.content || ''
-    const listType = element.listType || 'none'
-
-    if (element.runs && element.runs.length > 0) {
-      return element.runs.map((run, index) => {
-        const style = {
-          fontSize: run.fontSize ? `${run.fontSize}px` : undefined,
-          fontWeight: run.fontWeight,
-          fontFamily: run.fontFamily,
-          fontStyle: run.fontStyle,
-          textDecoration: run.textDecoration,
-          color: run.color,
-          lineHeight: run.lineHeight,
-        }
-        return (
-          <span key={index} style={style}>
-            {run.text}
-          </span>
-        )
-      })
-    }
-
-    if (listType === 'none' || !content) {
-      return <div dangerouslySetInnerHTML={{ __html: content }} style={{ width: '100%', height: '100%' }} />
-    }
-
-    const lines = content.split('\n')
-    let itemIndex = 0
-    return lines.map((line, index) => {
-      if (!line.trim()) return <div key={index}>&nbsp;</div>
-
-      itemIndex++
-      let prefix = ''
-
-      switch (listType) {
-        case 'bullet': prefix = '•'; break
-        case 'bullet-hollow': prefix = '○'; break
-        case 'bullet-square': prefix = '■'; break
-        case 'bullet-dash': prefix = '-'; break
-        case 'bullet-arrow': prefix = '➔'; break
-        case 'bullet-check': prefix = '✓'; break
-        case 'bullet-star': prefix = '★'; break
-        case 'numbered': prefix = `${itemIndex}.`; break
-        case 'numbered-paren': prefix = `${itemIndex})`; break
-        case 'alpha': prefix = `${String.fromCharCode(65 + ((itemIndex - 1) % 26))}.`; break
-        case 'alpha-lower': prefix = `${String.fromCharCode(97 + ((itemIndex - 1) % 26))}.`; break
-        case 'roman': prefix = `${getRoman(itemIndex)}.`; break
-        default: prefix = '•'
-      }
-
-      return (
-        <div key={index} className="flex">
-          <span className="flex-shrink-0 w-8">{prefix}</span>
-          <span dangerouslySetInnerHTML={{ __html: line }}></span>
-        </div>
-      )
-    })
   }
 
   // Normalise animation — may be { type, duration } object or legacy string key
@@ -2786,1198 +2733,215 @@ const EditorPage = () => {
   }
 
   // Preview animations function
+  // Play the current slide's object animations on the canvas (opens the
+  // slide first when in the overview), then return to the normal view.
+  const animPreviewTimerRef = useRef(null)
   const previewAnimations = () => {
-    setIsAnimationPreview(false)
-    setAnimationKey(prev => prev + 1)
-    setTimeout(() => {
-      setIsAnimationPreview(true)
-    }, 50)
+    const play = () => {
+      const els = frames.find(f => f.id === activeFrameId)?.elements || []
+      const animated = els.filter(el => { const t = getAnimType(el); return t && t !== 'none' })
+      if (animated.length === 0) {
+        toast.info('This slide has no animations yet — choose one for an object in the Animation panel')
+        return
+      }
+      const total = Math.max(...animated.map(el => (Number(el.animationDelay) || 0) + getAnimDuration(el)))
+      clearTimeout(animPreviewTimerRef.current)
+      setIsAnimationPreview(false)
+      setAnimationKey(prev => prev + 1)
+      setTimeout(() => setIsAnimationPreview(true), 50)
+      animPreviewTimerRef.current = setTimeout(() => setIsAnimationPreview(false), total + 600)
+    }
+    if (editorMode !== 'frame' || !isFrameFocused) {
+      handleFrameDoubleClick(activeFrameId)
+      setTimeout(play, 560)
+    } else play()
   }
 
-  // Render element content
-  const renderElement = (element) => {
-    switch (element.type) {
-      case 'text':
-        if (editingTextId === element.id) {
-          const initialHtml = element.runs && element.runs.length > 0 
-            ? convertRunsToHtml(element.runs) 
-            : (element.content || '')
+  // Inline rich-text editor. It sits inside the same text frame the shared
+  // renderer uses (getTextFrameStyle), so text does not jump when editing
+  // starts or ends — what you edit is exactly what presentation/export show.
+  const commitEditableText = (element, target, { deselect = false } = {}) => {
+    const frameEl = target.closest('[data-text-frame]') || target
+    const measured = Math.ceil(frameEl.scrollHeight || 0)
+    const updates = { content: target.innerHTML, runs: null }
+    if (element.type === 'text' && measured > (Number(element.height) || 0)) updates.height = measured
+    updateElement(element.id, updates)
+    setEditingTextId(null)
+    if (deselect) setSelectedElementId(null)
+    commitHistory()
+  }
 
-          return (
+  const renderEditableText = (element, { inShape = false } = {}) => (
+    <div
+      data-text-frame
+      style={inShape
+        ? { ...getTextFrameStyle(element, { inShape }), pointerEvents: 'auto' }
+        : { ...getTextFrameStyle(element), height: 'auto', flex: '1 1 auto' }}
+    >
+      <div
+        ref={editableDivRef}
+        contentEditable
+        suppressContentEditableWarning
+        data-text-editable="true"
+        className="slide-text text-editable relative z-20"
+        style={{ outline: 'none', minHeight: '1em', caretColor: '#0078d7', pointerEvents: 'auto' }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHtml(element.content || '') }}
+        onBlur={(e) => {
+          const relatedTarget = e.relatedTarget || document.activeElement
+          if (relatedTarget && (
+            relatedTarget.closest('[data-text-toolbar]') ||
+            relatedTarget.closest('.color-picker') ||
+            relatedTarget.closest('.dropdown-options') ||
+            relatedTarget.closest('.dropdown')
+          )) {
+            return
+          }
+          commitEditableText(element, e.currentTarget)
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation()
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            commitEditableText(element, e.currentTarget, { deselect: true })
+          }
+        }}
+        onKeyUp={saveSelection}
+        onMouseUp={saveSelection}
+        onDragStart={(e) => handleTextDragStart(e, element)}
+      />
+    </div>
+  )
+
+  // Table editing (PowerPoint Table Design / Layout)
+  const tableCellRef = useRef(null)
+  const [tablePen, setTablePen] = useState({ width: 2, color: '#374151', style: 'solid' })
+  const tableTarget = (el) => {
+    const t = tableCellRef.current
+    const cells = getTableCells(el)
+    if (t && t.elementId === el.id) return { r: Math.min(t.r, cells.length - 1), c: Math.min(t.c, (cells[0]?.length || 1) - 1) }
+    return { r: cells.length - 1, c: (cells[0]?.length || 1) - 1 }
+  }
+  const tableEdit = (el, op) => {
+    const { r, c } = tableTarget(el)
+    let patch = null
+    if (op === 'rowAbove') patch = tableOps.insertRow(el, r, { below: false })
+    if (op === 'rowBelow') patch = tableOps.insertRow(el, r, { below: true })
+    if (op === 'colLeft') patch = tableOps.insertCol(el, c, { right: false })
+    if (op === 'colRight') patch = tableOps.insertCol(el, c, { right: true })
+    if (op === 'delRow') patch = tableOps.deleteRow(el, r)
+    if (op === 'delCol') patch = tableOps.deleteCol(el, c)
+    if (!patch) { toast.info(op.startsWith('del') ? 'A table needs at least one row and one column' : 'Nothing to change'); return }
+    updateElement(el.id, patch)
+    commitHistory()
+  }
+  const tableBorders = (el, scope) => {
+    updateElement(el.id, tableOps.applyBorders(el, tablePen, scope))
+    commitHistory()
+  }
+  useEffect(() => {
+    if (selectedElement?.type === 'table') setTablePen((p) => ({ ...p, ...tableOps.currentPen(selectedElement), width: Math.max(0.5, tableOps.currentPen(selectedElement).width || 2) }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedElementId])
+
+  const stopEditorEvents = {
+    onPointerDown: (e) => e.stopPropagation(),
+    onMouseDown: (e) => e.stopPropagation(),
+  }
+
+  // Render element content. Everything is drawn by the shared ElementView;
+  // the editor only swaps in inline editors for the part being edited.
+  const renderElement = (element) => {
+    const isEditing = editingTextId === element.id
+
+    if (element.type === 'text') {
+      return isEditing ? renderEditableText(element) : <ElementView element={element} />
+    }
+
+    if (element.type === 'shape') {
+      return (
+        <ElementView
+          element={element}
+          textSlot={isEditing ? renderEditableText(element, { inShape: true }) : undefined}
+        />
+      )
+    }
+
+    if (element.type === 'image') {
+      const captionSlot = isEditing && element.caption && element.showCaption ? (
+        <input
+          type="text"
+          className="w-full bg-gray-100 border-none outline-none text-center px-2 py-1 rounded"
+          style={{ fontSize: `${element.captionFontSize || 14}px`, color: element.captionColor, fontFamily: element.captionFontFamily, caretColor: '#0078d7' }}
+          value={element.caption || ''}
+          onChange={(e) => updateElement(element.id, { caption: e.target.value })}
+          onBlur={() => { setEditingTextId(null); commitHistory() }}
+          {...stopEditorEvents}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingTextId(null); commitHistory() }
+          }}
+          autoFocus
+          placeholder="Add caption..."
+        />
+      ) : undefined
+      return <ElementView element={element} captionSlot={captionSlot} />
+    }
+
+    if (element.type === 'icon') {
+      const labelSlot = isEditing && element.content && element.showLabel ? (
+        <input
+          type="text"
+          className="w-full bg-transparent border-none outline-none text-center px-1"
+          style={{ fontSize: `${element.fontSize || 14}px`, fontWeight: element.fontWeight, fontFamily: element.fontFamily, color: element.textColor, caretColor: '#0078d7' }}
+          value={element.content || ''}
+          onChange={(e) => updateElement(element.id, { content: e.target.value })}
+          onBlur={() => { setEditingTextId(null); commitHistory() }}
+          {...stopEditorEvents}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingTextId(null); commitHistory() }
+          }}
+          autoFocus
+          placeholder="Label"
+        />
+      ) : undefined
+      return <ElementView element={element} labelSlot={labelSlot} />
+    }
+
+    if (element.type === 'table') {
+      const editable = selectedElementId === element.id
+      return (
+        <ElementView
+          element={element}
+          renderCell={editable ? (cell, r, c) => (
             <div
-              ref={editableDivRef}
+              key={`${element.id}-${r}-${c}-${cell.html ?? cell.text ?? ''}`}
               contentEditable
               suppressContentEditableWarning
-              data-text-editable="true"
-              className="w-full h-full bg-transparent border-none outline-none resize-none whitespace-pre-wrap text-editable relative z-20 overflow-y-auto"
-              style={{
-                fontSize: element.fontSize,
-                fontWeight: element.fontWeight,
-                fontFamily: element.fontFamily || 'Inter',
-                fontStyle: element.isPlaceholder ? 'italic' : (element.fontStyle || 'normal'),
-                textDecoration: element.textDecoration || 'none',
-                textAlign: element.textAlign || 'left',
-                color: element.isPlaceholder ? '#9ca3af' : element.color,
-                lineHeight: 1.5,
-                paddingTop: element.padding?.top ?? 8, paddingBottom: element.padding?.bottom ?? 8, paddingLeft: element.padding?.left ?? 8, paddingRight: element.padding?.right ?? 8, border: element.borderWidth ? `${element.borderWidth}px solid ${element.borderColor || '#333333'}` : 'none',
-                borderRadius: element.borderRadius ? `${element.borderRadius}px` : 0,
-                backgroundColor: element.backgroundColor || 'transparent',
-                caretColor: '#0078d7',
-                outline: 'none',
-              }}
-              dangerouslySetInnerHTML={{ __html: initialHtml }}
-              onInput={(e) => {
-                const target = e.currentTarget
-                const newHeight = Math.max(Number(element.height) || 50, target.scrollHeight)
-                target.style.height = `${newHeight}px`
-              }}
+              className="slide-text outline-none min-h-[1em] focus:bg-blue-50/60 rounded-sm"
+              {...stopEditorEvents}
+              onFocus={() => { tableCellRef.current = { elementId: element.id, r, c } }}
+              onKeyDown={(e) => e.stopPropagation()}
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(cell.html ?? String(cell.text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')) }}
               onBlur={(e) => {
-                const relatedTarget = e.relatedTarget || document.activeElement
-                if (relatedTarget && (
-                  relatedTarget.closest('[data-text-toolbar]') ||
-                  relatedTarget.closest('.color-picker') ||
-                  relatedTarget.closest('.dropdown-options') ||
-                  relatedTarget.closest('.dropdown')
-                )) {
-                  return
-                }
-
-                const newHtml = e.currentTarget.innerHTML
-                const newHeight = Math.max(Number(element.height) || 50, e.currentTarget.scrollHeight)
-                updateElement(element.id, {
-                  content: newHtml,
-                  runs: null,
-                  height: newHeight
-                })
-                setEditingTextId(null)
+                const html = e.currentTarget.innerHTML
+                const text = e.currentTarget.innerText
+                const cells = getTableCells(element).map((row) => row.map((cl) => ({ ...cl })))
+                if ((cells[r][c].html ?? cells[r][c].text ?? '') === html) return
+                cells[r][c] = { ...cells[r][c], html, text }
+                const data = cells.map((row) => row.map((cl) => cl.text ?? ''))
+                updateElement(element.id, { cells, data })
                 commitHistory()
               }}
-              onPointerDown={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                e.stopPropagation()
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  const newHtml = e.currentTarget.innerHTML
-                  updateElement(element.id, {
-                    content: newHtml,
-                    runs: null,
-                  })
-                  setEditingTextId(null)
-                  setSelectedElementId(null)
-                  commitHistory()
-                }
-              }}
-              onKeyUp={saveSelection}
-              onMouseUp={saveSelection}
-              onDragStart={(e) => handleTextDragStart(e, element)}
             />
-          )
-        }
-        return (
-          <div
-            className={`w-full h-full whitespace-pre-wrap overflow-hidden transition-colors duration-150 ${element.isPlaceholder
-              ? 'text-placeholder cursor-text hover:bg-blue-50/50'
-              : ''
-              }`}
-            style={{
-              fontSize: element.fontSize,
-              fontWeight: element.fontWeight,
-              fontFamily: element.fontFamily || 'Inter',
-              fontStyle: element.isPlaceholder ? 'italic' : (element.fontStyle || 'normal'),
-              textDecoration: element.textDecoration || 'none',
-              textAlign: element.textAlign || 'left',
-              color: element.isPlaceholder ? '#9ca3af' : element.color,
-              lineHeight: 1.5,
-              paddingTop: element.padding?.top ?? 8, paddingBottom: element.padding?.bottom ?? 8, paddingLeft: element.padding?.left ?? 8, paddingRight: element.padding?.right ?? 8, border: element.borderWidth ? `${element.borderWidth}px solid ${element.borderColor || '#333333'}` : 'none',
-              borderRadius: element.borderRadius ? `${element.borderRadius}px` : 0,
-              backgroundColor: element.backgroundColor || 'transparent',
-            }}
-          >
-            {renderTextContent(element)}
-          </div>
-        )
-
-      case 'shape':
-        const shapeStyle = {
-          opacity: (element.opacity || 100) / 100,
-          transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
-        }
-
-        // Shape rendering with text overlay support
-        let shapeContent
-        const type = element.shapeType || 'rectangle'
-        switch(type) {
-          case 'circle':
-          case 'oval':
-            shapeContent = (
-              <div
-                className="w-full h-full rounded-full"
-                style={{ backgroundColor: element.fill, border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none', ...shapeStyle }}
-              />
-            )
-            break
-          case 'roundedRectangle':
-            shapeContent = (
-              <div
-                className="w-full h-full"
-                style={{
-                  backgroundColor: element.fill,
-                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  borderRadius: `${element.borderRadius ?? 16}px`,
-                  ...shapeStyle
-                }}
-              />
-            )
-            break
-          case 'semicircle':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 0 100 A 50 50 0 0 1 100 100 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'triangle':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 200 150" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="100,0 0,150 200,150" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rightTriangle':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,0 0,100 100,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'parallelogram':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="25,0 100,0 75,100 0,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'diamond':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,0 100,50 50,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'pentagon':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 95,38 78,92 22,92 5,38" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'hexagon':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 120 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="30,0 90,0 120,50 90,100 30,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'octagon':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="30,5 70,5 95,30 95,70 70,95 30,95 5,70 5,30" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cylinder':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 20 L 10 80 A 40 10 0 0 0 90 80 L 90 20 A 40 10 0 0 0 10 20 M 10 20 A 40 10 0 0 0 90 20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'chevronProcess':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,0 75,0 100,50 75,100 0,100 25,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'shield':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 10 L 90 10 L 90 50 Q 90 85 50 95 Q 10 85 10 50 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'waveFlag':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 20 Q 30 10 50 20 T 90 20 L 90 80 Q 70 70 50 80 T 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'folder':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 20 L 40 20 L 50 30 L 90 30 L 90 80 L 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'stickyNote':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 10 L 90 10 L 90 70 L 70 90 L 10 90 Z M 90 70 L 70 70 L 70 90" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'document':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 15 10 L 70 10 L 85 25 L 85 90 L 15 90 Z M 70 10 L 70 25 L 85 25" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'puzzle':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 20 20 L 40 20 C 40 10, 60 10, 60 20 L 80 20 L 80 40 C 90 40, 90 60, 80 60 L 80 80 L 60 80 C 60 90, 40 90, 40 80 L 20 80 L 20 60 C 10 60, 10 40, 20 40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'leftArrowBlock':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,50 40,15 40,35 100,35 100,65 40,65 40,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rightArrowBlock':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="100,50 60,15 60,35 0,35 0,65 60,65 60,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'leftRightArrowBlock':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,50 25,25 25,40 75,40 75,25 100,50 75,75 75,60 25,60 25,75" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'chevronArrowBlock':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,25 50,25 50,10 90,50 50,90 50,75 0,75 40,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'pentagonArrowBlock':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="0,35 60,35 60,15 100,50 60,85 60,65 0,65" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'crescent':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 80 15 A 35 35 0 1 0 80 85 A 30 30 0 1 1 80 15" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star4':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,10 60,40 90,50 60,60 50,90 40,60 10,50 40,40" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 61,35 95,35 68,57 79,91 50,70 21,91 32,57 5,35 39,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star6':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 63,28 90,28 72,50 90,72 63,72 50,95 37,72 10,72 28,50 10,28 37,28" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star8':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 58,35 82,18 65,42 95,50 65,58 82,82 58,65 50,95 42,65 18,82 35,58 5,50 35,42 18,18 42,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'sun':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 53,23 68,14 64,31 81,19 72,36 89,30 76,46 95,50 76,54 89,70 72,64 81,81 64,69 68,86 53,77 50,95 47,77 32,86 36,69 19,81 28,64 11,70 24,54 5,50 24,46 11,30 28,36 19,19 36,31 32,14 47,23" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'teardrop':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 50 10 C 50 10 90 55 90 70 A 40 40 0 0 1 10 70 C 10 55 50 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'ovalSpeech':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 50 10 C 25 10 5 25 5 45 C 5 60 18 73 35 77 L 25 95 L 48 80 C 49 80 50 80 50 80 C 75 80 95 65 95 45 C 95 25 75 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rectSpeech':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 10 10 L 90 10 L 90 70 L 45 70 L 25 90 L 25 70 L 10 70 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'thoughtBubble':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 30 60 A 15 15 0 0 1 38 35 A 18 18 0 0 1 70 35 A 15 15 0 0 1 78 60 A 12 12 0 0 1 70 75 L 35 75 A 12 12 0 0 1 30 60 Z M 22 83 A 5 5 0 1 1 17 83 A 5 5 0 1 1 22 83 Z M 13 91 A 3 3 0 1 1 10 91 A 3 3 0 1 1 13 91 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cloud':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 25 60 A 15 15 0 0 1 35 35 A 20 20 0 0 1 70 35 A 15 15 0 0 1 80 60 A 12 12 0 0 1 75 80 L 25 80 A 12 12 0 0 1 25 60 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'heart':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 50 30 C 50 10, 10 10, 10 40 C 10 65, 50 90, 50 95 C 50 90, 90 65, 90 40 C 90 10, 50 10, 50 30 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cross':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="35,5 65,5 65,35 95,35 95,65 65,65 65,95 35,95 35,65 5,65 5,35 35,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'flower':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 50,40 C 53,30 63,30 66,40 C 76,37 79,47 70,53 C 79,59 71,69 61,66 C 60,76 50,76 47,66 C 37,69 29,59 38,53 C 29,47 32,37 42,40 C 40,30 50,30 50,40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'decagram':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <polygon points="50,5 57,20 72,12 70,28 85,25 78,39 92,45 81,54 88,70 75,72 77,88 63,83 59,95 48,87 37,95 33,83 19,88 21,72 8,70 15,54 4,45 18,39 11,25 26,28 24,12 39,20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'roundedFlower':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 50,20 L 53,20 L 55,10 L 61,12 L 59,21 L 64,23 L 69,16 L 74,20 L 69,27 L 73,31 L 80,27 L 83,32 L 76,37 L 78,42 L 86,42 L 86,48 L 77,50 L 77,55 L 85,58 L 83,63 L 75,61 L 72,66 L 77,73 L 73,77 L 66,72 L 62,75 L 63,84 L 57,85 L 55,76 L 50,77 L 48,86 L 42,85 L 44,76 L 39,74 L 33,80 L 29,75 L 34,69 L 31,64 L 23,67 L 21,62 L 28,57 L 27,52 L 18,50 L 18,44 L 27,42 L 28,37 L 20,34 L 22,29 L 30,32 L 33,27 L 28,20 L 33,16 L 38,23 L 43,21 L 43,12 L 49,11 Z M 50,35 A 15,15 0 1 0 50,65 A 15,15 0 1 0 50,35 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'line':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 200 10" preserveAspectRatio="none" style={shapeStyle}>
-                <line x1="0" y1="5" x2="200" y2="5" stroke={element.fill || element.strokeColor} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'arrow':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 200 30" preserveAspectRatio="none" style={shapeStyle}>
-                <line x1="0" y1="15" x2="170" y2="15" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-                <polygon points="170,5 200,15 170,25" fill={element.strokeColor || element.fill} />
-              </svg>
-            )
-            break
-          case 'doubleArrow':
-            shapeContent = (
-              <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" style={shapeStyle}>
-                <path d="M 12 50 L 88 50 M 28 30 L 8 50 L 28 70 M 72 30 L 92 50 L 72 70" fill="none" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 3} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'square':
-          case 'rectangle':
-          case 'tallRectangle':
-          default:
-            shapeContent = (
-              <div
-                className="w-full h-full"
-                style={{
-                  backgroundColor: element.fill,
-                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' || type === 'tallRectangle' ? '4px' : '0px'),
-                  ...shapeStyle
-                }}
-              />
-            )
-            break
-        }
-
-        // Wrap shape with text overlay
-        return (
-          <div className="relative w-full h-full">
-            {shapeContent}
-            {editingTextId === element.id ? (
-              <div
-                ref={editableDivRef}
-                contentEditable
-                suppressContentEditableWarning
-                data-text-editable="true"
-                className="absolute inset-0 bg-transparent border-none outline-none resize-none p-2 text-center flex items-center justify-center overflow-y-auto"
-                style={{
-                  fontSize: `${element.fontSize}px`,
-                  fontWeight: element.fontWeight,
-                  fontFamily: element.fontFamily || 'Inter',
-                  fontStyle: element.fontStyle || 'normal',
-                  textDecoration: element.textDecoration || 'none',
-                  textAlign: element.textAlign || 'center',
-                  color: element.color,
-                  caretColor: '#0078d7',
-                  outline: 'none',
-                }}
-                dangerouslySetInnerHTML={{ __html: element.runs && element.runs.length > 0 ? convertRunsToHtml(element.runs) : (element.content || '') }}
-                onBlur={(e) => {
-                  const relatedTarget = e.relatedTarget || document.activeElement
-                  if (relatedTarget && (
-                    relatedTarget.closest('[data-text-toolbar]') ||
-                    relatedTarget.closest('.color-picker') ||
-                    relatedTarget.closest('.dropdown-options') ||
-                    relatedTarget.closest('.dropdown')
-                  )) {
-                    return
-                  }
-
-                  const newHtml = e.currentTarget.innerHTML
-                  updateElement(element.id, {
-                    content: newHtml,
-                    runs: null,
-                  })
-                  setEditingTextId(null)
-                  commitHistory()
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  e.stopPropagation()
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    const newHtml = e.currentTarget.innerHTML
-                    updateElement(element.id, {
-                      content: newHtml,
-                      runs: null,
-                    })
-                    setEditingTextId(null)
-                    setSelectedElementId(null)
-                    commitHistory()
-                  }
-                }}
-                onKeyUp={saveSelection}
-                onMouseUp={saveSelection}
-                onDragStart={(e) => handleTextDragStart(e, element)}
-              />
-            ) : element.content ? (
-              <div
-                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                style={{
-                  fontSize: `${element.fontSize}px`,
-                  fontWeight: element.fontWeight,
-                  fontFamily: element.fontFamily || 'Inter',
-                  fontStyle: element.fontStyle || 'normal',
-                  textDecoration: element.textDecoration || 'none',
-                  textAlign: element.textAlign || 'center',
-                  color: element.color,
-                  padding: '8px',
-                  overflow: 'hidden',
-                  wordWrap: 'break-word',
-                }}
-                dangerouslySetInnerHTML={{ __html: element.content }}
-              />
-            ) : null}
-          </div>
-        )
-
-      case 'image':
-        return (
-          <div className={`w-full h-full flex flex-col ${element.caption && element.showCaption ? 'gap-1' : ''}`} style={{ transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined }}>
-            <img
-              src={element.src}
-              alt={element.caption || "canvas"}
-              className={`${element.caption && element.showCaption ? 'flex-1' : 'w-full h-full'} object-contain rounded`}
-              style={{
-                transform: (`${element.flipH ? 'scaleX(-1)' : ''} ${element.flipV ? 'scaleY(-1)' : ''}`).trim() || undefined,
-                borderRadius: typeof element.borderRadius === 'number' ? `${element.borderRadius}px` : (element.borderRadius || undefined)
-              }}
-              draggable={false}
-              onError={(e) => {
-                e.target.style.display = 'none'
-                e.target.parentNode.classList.add('bg-gray-100')
-              }}
-            />
-            {/* Image caption support */}
-            {element.caption && element.showCaption && (
-              editingTextId === element.id ? (
-                <input
-                  type="text"
-                  className="w-full bg-gray-100 border-none outline-none text-center px-2 py-1 rounded"
-                  style={{
-                    fontSize: `${element.captionFontSize}px`,
-                    color: element.captionColor,
-                    fontFamily: element.captionFontFamily,
-                    caretColor: '#0078d7',
-                  }}
-                  value={element.caption || ''}
-                  onChange={(e) => updateElement(element.id, { caption: e.target.value })}
-                  onBlur={() => setEditingTextId(null)}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    e.stopPropagation()
-                    if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setEditingTextId(null)
-                      setSelectedElementId(null)
-                    }
-                  }}
-                  autoFocus
-                  placeholder="Add caption..."
-                />
-              ) : (
-                <div
-                  className="w-full text-center px-2 py-1 bg-gray-100 rounded overflow-hidden text-ellipsis"
-                  style={{
-                    fontSize: `${element.captionFontSize}px`,
-                    color: element.captionColor,
-                    fontFamily: element.captionFontFamily,
-                  }}
-                >
-                  {element.caption}
-                </div>
-              )
-            )}
-          </div>
-        )
-
-      case 'icon':
-        const iconSize = Math.min(element.width, element.height) * (element.content && element.showLabel ? 0.6 : 0.8)
-        const iconColor = element.color || '#2E7D32'
-        return (
-          <div className={`w-full h-full flex items-center justify-center ${element.content && element.showLabel ? 'flex-col gap-1' : ''}`}>
-            {element.iconType === 'star' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-              </svg>
-            )}
-            {element.iconType === 'heart' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-              </svg>
-            )}
-            {element.iconType === 'check' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            )}
-            {element.iconType === 'x' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5">
-                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            )}
-            {element.iconType === 'arrowRight' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
-              </svg>
-            )}
-            {element.iconType === 'arrowUp' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" />
-              </svg>
-            )}
-            {element.iconType === 'lightning' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-            )}
-            {element.iconType === 'sun' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke={iconColor} strokeWidth="1">
-                <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-              </svg>
-            )}
-            {element.iconType === 'moon' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            )}
-            {element.iconType === 'cloud' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
-              </svg>
-            )}
-            {element.iconType === 'thumbsUp' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
-              </svg>
-            )}
-            {element.iconType === 'thumbsDown' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
-              </svg>
-            )}
-            {element.iconType === 'flag' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke={iconColor} strokeWidth="1">
-                <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" /><line x1="4" y1="22" x2="4" y2="15" />
-              </svg>
-            )}
-            {element.iconType === 'bell' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke={iconColor} strokeWidth="1">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-            )}
-            {element.iconType === 'bookmark' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-              </svg>
-            )}
-            {element.iconType === 'lock' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-            )}
-            {element.iconType === 'trophy' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke={iconColor} strokeWidth="1">
-                <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" /><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" /><path d="M4 22h16" /><path d="M10 22V8a6 6 0 0 0-6-6v1a5 5 0 0 0 5 5h6a5 5 0 0 0 5-5V2a6 6 0 0 0-6 6v14" />
-              </svg>
-            )}
-            {element.iconType === 'gift' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polyline points="20 12 20 22 4 22 4 12" /><rect x="2" y="7" width="20" height="5" /><line x1="12" y1="22" x2="12" y2="7" /><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" /><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
-              </svg>
-            )}
-            {element.iconType === 'arrowDown' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />
-              </svg>
-            )}
-            {element.iconType === 'arrowLeft' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" />
-              </svg>
-            )}
-            {element.iconType === 'unlock' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" />
-              </svg>
-            )}
-            {element.iconType === 'home' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
-              </svg>
-            )}
-            {element.iconType === 'user' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
-              </svg>
-            )}
-            {element.iconType === 'users' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-            )}
-            {element.iconType === 'settings' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            )}
-            {element.iconType === 'search' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            )}
-            {element.iconType === 'mail' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" />
-              </svg>
-            )}
-            {element.iconType === 'phone' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
-              </svg>
-            )}
-            {element.iconType === 'calendar' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-              </svg>
-            )}
-            {element.iconType === 'clock' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-              </svg>
-            )}
-            {element.iconType === 'camera' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" />
-              </svg>
-            )}
-            {element.iconType === 'image' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
-              </svg>
-            )}
-            {element.iconType === 'video' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-            )}
-            {element.iconType === 'music' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-              </svg>
-            )}
-            {element.iconType === 'headphones' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
-              </svg>
-            )}
-            {element.iconType === 'mic' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            )}
-            {element.iconType === 'wifi' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" />
-              </svg>
-            )}
-            {element.iconType === 'download' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-            )}
-            {element.iconType === 'upload' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-            )}
-            {element.iconType === 'share' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-              </svg>
-            )}
-            {element.iconType === 'link' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-              </svg>
-            )}
-            {element.iconType === 'pin' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" fill="white" />
-              </svg>
-            )}
-            {element.iconType === 'globe' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-              </svg>
-            )}
-            {element.iconType === 'coffee' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M18 8h1a4 4 0 0 1 0 8h-1" /><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" /><line x1="6" y1="1" x2="6" y2="4" /><line x1="10" y1="1" x2="10" y2="4" /><line x1="14" y1="1" x2="14" y2="4" />
-              </svg>
-            )}
-            {element.iconType === 'briefcase' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="2" y="7" width="20" height="14" rx="2" ry="2" /><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-              </svg>
-            )}
-            {element.iconType === 'folder' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-            )}
-            {element.iconType === 'file' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" />
-              </svg>
-            )}
-            {element.iconType === 'clipboard' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
-              </svg>
-            )}
-            {element.iconType === 'edit' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-              </svg>
-            )}
-            {element.iconType === 'trash' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            )}
-            {element.iconType === 'plus' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            )}
-            {element.iconType === 'minus' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            )}
-            {element.iconType === 'refresh' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-              </svg>
-            )}
-            {element.iconType === 'power' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M18.36 6.64a9 9 0 1 1-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" />
-              </svg>
-            )}
-            {element.iconType === 'zap' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-            )}
-            {element.iconType === 'target' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />
-              </svg>
-            )}
-            {element.iconType === 'award' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="8" r="7" /><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88" />
-              </svg>
-            )}
-            {element.iconType === 'shield' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-            )}
-            {element.iconType === 'eye' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
-              </svg>
-            )}
-            {element.iconType === 'eyeOff' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-            )}
-            {element.iconType === 'smile' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
-              </svg>
-            )}
-            {element.iconType === 'frown' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><path d="M16 16s-1.5-2-4-2-4 2-4 2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
-              </svg>
-            )}
-            {element.iconType === 'meh' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="8" y1="15" x2="16" y2="15" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
-              </svg>
-            )}
-            {element.iconType === 'fire' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M12 23c-3.9 0-7-3.1-7-7 0-2.1.9-4.1 2.5-5.5L12 6l4.5 4.5c1.6 1.4 2.5 3.4 2.5 5.5 0 3.9-3.1 7-7 7z" />
-              </svg>
-            )}
-            {element.iconType === 'droplet' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
-              </svg>
-            )}
-            {element.iconType === 'leaf' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M17 8C8 10 5.9 16.17 3.82 21.34l1.89.66.95-2.3c.48.17.98.3 1.34.3C19 20 22 3 22 3c-1 2-8 2.25-13 3.25S2 11.5 2 13.5s1.75 3.75 1.75 3.75C7 8 17 8 17 8z" />
-              </svg>
-            )}
-            {element.iconType === 'rocket' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" /><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" /><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" /><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
-              </svg>
-            )}
-            {element.iconType === 'anchor' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="5" r="3" /><line x1="12" y1="22" x2="12" y2="8" /><path d="M5 12H2a10 10 0 0 0 20 0h-3" />
-              </svg>
-            )}
-            {element.iconType === 'compass' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
-              </svg>
-            )}
-            {element.iconType === 'umbrella' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M23 12a11.05 11.05 0 0 0-22 0zm-5 7a3 3 0 0 1-6 0v-7" />
-              </svg>
-            )}
-            {element.iconType === 'lightbulb' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="9" y1="18" x2="15" y2="18" /><line x1="10" y1="22" x2="14" y2="22" /><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
-              </svg>
-            )}
-            {element.iconType === 'key' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-              </svg>
-            )}
-            {element.iconType === 'crown' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M2 16l4-10 6 6 6-6 4 10z" />
-              </svg>
-            )}
-            {element.iconType === 'gem' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polygon points="12 2 2 7 12 22 22 7 12 2" /><polyline points="2 7 12 12 22 7" /><line x1="12" y1="12" x2="12" y2="22" />
-              </svg>
-            )}
-            {element.iconType === 'dollar' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-              </svg>
-            )}
-            {element.iconType === 'percent' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="19" y1="5" x2="5" y2="19" /><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" />
-              </svg>
-            )}
-            {element.iconType === 'hash' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <line x1="4" y1="9" x2="20" y2="9" /><line x1="4" y1="15" x2="20" y2="15" /><line x1="10" y1="3" x2="8" y2="21" /><line x1="16" y1="3" x2="14" y2="21" />
-              </svg>
-            )}
-            {element.iconType === 'at' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="4" /><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94" />
-              </svg>
-            )}
-            {element.iconType === 'infinity' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.739-8-4.585 0-4.585 8 0 8 5.606 0 7.644-8 12.74-8z" />
-              </svg>
-            )}
-            {element.iconType === 'info' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
-              </svg>
-            )}
-            {element.iconType === 'alertCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
-            )}
-            {element.iconType === 'helpCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-            )}
-            {element.iconType === 'checkCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-              </svg>
-            )}
-            {element.iconType === 'xCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-              </svg>
-            )}
-            {element.iconType === 'minusCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="8" y1="12" x2="16" y2="12" />
-              </svg>
-            )}
-            {element.iconType === 'plusCircle' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
-              </svg>
-            )}
-            {/* Additional icons - flower, tree, mountain, plane, car, bike, battery, bluetooth */}
-            {element.iconType === 'flower' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <circle cx="12" cy="12" r="3" /><path d="M12 2a3 3 0 0 1 0 6 3 3 0 0 1 0-6zM12 16a3 3 0 0 1 0 6 3 3 0 0 1 0-6zM4.93 4.93a3 3 0 0 1 4.24 4.24 3 3 0 0 1-4.24-4.24zM14.83 14.83a3 3 0 0 1 4.24 4.24 3 3 0 0 1-4.24-4.24zM2 12a3 3 0 0 1 6 0 3 3 0 0 1-6 0zM16 12a3 3 0 0 1 6 0 3 3 0 0 1-6 0zM4.93 19.07a3 3 0 0 1 4.24-4.24 3 3 0 0 1-4.24 4.24zM14.83 9.17a3 3 0 0 1 4.24-4.24 3 3 0 0 1-4.24 4.24z" />
-              </svg>
-            )}
-            {element.iconType === 'tree' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M12 2L4 12h4l-3 5h4l-3 5h12l-3-5h4l-3-5h4L12 2z" />
-              </svg>
-            )}
-            {element.iconType === 'mountain' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M8 21l6-9 4 5h4L12 3 2 21h6z" />
-              </svg>
-            )}
-            {element.iconType === 'plane' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 1 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
-              </svg>
-            )}
-            {element.iconType === 'car' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <path d="M16 8l2 4h2a2 2 0 0 1 2 2v3a1 1 0 0 1-1 1h-1.09a3 3 0 0 1-5.82 0H9.91a3 3 0 0 1-5.82 0H3a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h10z" /><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" />
-              </svg>
-            )}
-            {element.iconType === 'bike' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <circle cx="5.5" cy="17.5" r="3.5" /><circle cx="18.5" cy="17.5" r="3.5" /><path d="M15 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm-3 11.5V14l-3-3 4-3 2 3h3" />
-              </svg>
-            )}
-            {element.iconType === 'battery' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <rect x="1" y="6" width="18" height="12" rx="2" ry="2" /><line x1="23" y1="13" x2="23" y2="11" />
-              </svg>
-            )}
-            {element.iconType === 'bluetooth' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5" />
-              </svg>
-            )}
-            {/* Icon label support */}
-            {element.content && element.showLabel && (
-              editingTextId === element.id ? (
-                <input
-                  type="text"
-                  className="w-full bg-transparent border-none outline-none text-center px-1"
-                  style={{
-                    fontSize: `${element.fontSize}px`,
-                    fontWeight: element.fontWeight,
-                    fontFamily: element.fontFamily,
-                    color: element.textColor,
-                    caretColor: '#0078d7',
-                  }}
-                  value={element.content || ''}
-                  onChange={(e) => handleTextChange(element.id, e.target.value)}
-                  onBlur={() => setEditingTextId(null)}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => {
-                    e.stopPropagation()
-                    if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setEditingTextId(null)
-                      setSelectedElementId(null)
-                    }
-                  }}
-                  autoFocus
-                  placeholder="Label"
-                />
-              ) : (
-                <div
-                  className="w-full text-center px-1 overflow-hidden text-ellipsis whitespace-nowrap"
-                  style={{
-                    fontSize: `${element.fontSize}px`,
-                    fontWeight: element.fontWeight,
-                    fontFamily: element.fontFamily,
-                    color: element.textColor,
-                  }}
-                >
-                  {element.content}
-                </div>
-              )
-            )}
-          </div>
-        )
-
-      case 'table':
-        return (
-          <table className="w-full h-full border-collapse border border-gray-400">
-            <tbody>
-              {Array(element.rows).fill(null).map((_, rowIdx) => (
-                <tr key={rowIdx}>
-                  {Array(element.cols).fill(null).map((_, colIdx) => (
-                    <td
-                      key={`${rowIdx}-${colIdx}`}
-                      className="border border-gray-400 p-2 text-xs outline-none focus:bg-primary/5"
-                      contentEditable
-                      suppressContentEditableWarning
-                      onBlur={(e) => {
-                        const newData = (element.data || []).map(r => [...r])
-                        if (!newData[rowIdx]) newData[rowIdx] = []
-                        newData[rowIdx][colIdx] = e.currentTarget.textContent
-                        updateElement(element.id, { data: newData })
-                      }}
-                    >
-                      {element.data?.[rowIdx]?.[colIdx] || ''}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )
-
-      case 'video':
-        return element.isYouTube ? (
-          <iframe
-            src={element.src}
-            className="w-full h-full rounded"
-            frameBorder="0"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-          />
-        ) : (
-          <video
-            src={element.src}
-            className="w-full h-full rounded bg-black"
-            controls
-            muted={element.muted}
-            loop={element.loop}
-          />
-        )
-
-      case 'audio':
-        return (
-          <div className="w-full h-full bg-gray-100 rounded-lg flex items-center gap-3 px-4">
-            <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
-                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-              </svg>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">{element.title}</p>
-              <audio src={element.src} controls className="w-full h-8 mt-1" />
-            </div>
-          </div>
-        )
-
-      case 'drawing':
-        return (
-          <svg className="w-full h-full" viewBox={`0 0 ${SLIDE_WIDTH} ${SLIDE_HEIGHT}`} style={{ pointerEvents: 'none' }}>
-            {element.paths?.map((path, pathIdx) => (
-              <path
-                key={pathIdx}
-                d={`M ${path.points.map(p => `${p.x} ${p.y}`).join(' L ')}`}
-                stroke={path.color}
-                strokeWidth={path.size}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={path.opacity ?? 1}
-              />
-            ))}
-          </svg>
-        )
-
-      default:
-        return null
+          ) : undefined}
+        />
+      )
     }
+
+    return <ElementView element={element} interactive />
   }
 
 
@@ -4013,10 +2977,11 @@ const EditorPage = () => {
   // easeInOutCubic — symmetric, smooth start and end.
   const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
-  // Read viewport dimensions the same way updateCameraToBox does.
+  // Read viewport dimensions (used by every camera move).
   const getViewportSize = useCallback(() => {
-    if (canvasRef.current) {
-      const rect = canvasRef.current.getBoundingClientRect()
+    const vp = viewportRef.current || canvasRef.current
+    if (vp) {
+      const rect = vp.getBoundingClientRect()
       return { w: Math.max(360, rect.width), h: Math.max(280, rect.height) }
     }
     return { w: window.innerWidth, h: window.innerHeight }
@@ -4024,12 +2989,34 @@ const EditorPage = () => {
 
   const cameraForCenter = useCallback((targetZoom, worldCenterX, worldCenterY) => {
     const { w, h } = getViewportSize()
-    const originX = worldBounds.width / 2
-    const originY = worldBounds.height / 2
-    const panX = originX + (w / 2 - originX) / targetZoom - worldCenterX
-    const panY = originY + (h / 2 - originY) / targetZoom - worldCenterY
-    return { panX, panY }
-  }, [worldBounds.width, worldBounds.height, getViewportSize])
+    return { panX: w / 2 / targetZoom - worldCenterX, panY: h / 2 / targetZoom - worldCenterY }
+  }, [getViewportSize])
+
+  /** Smoothly move the camera to `target` (log-zoom + centre interpolation) */
+  const animateCameraTo = useCallback((target, duration = 420) => {
+    cancelCameraAnim()
+    const myToken = cameraAnimRef.current.token + 1
+    cameraAnimRef.current.token = myToken
+    const start = cameraLiveRef.current
+    const { w, h } = getViewportSize()
+    const c0 = { x: w / 2 / start.zoom - start.panX, y: h / 2 / start.zoom - start.panY }
+    const c1 = { x: w / 2 / target.zoom - target.panX, y: h / 2 / target.zoom - target.panY }
+    const lz0 = Math.log(start.zoom)
+    const lz1 = Math.log(target.zoom)
+    const t0 = performance.now()
+    const tick = (now) => {
+      if (cameraAnimRef.current.token !== myToken) return
+      const t = duration <= 0 ? 1 : Math.min(1, (now - t0) / duration)
+      const e = easeInOutCubic(t)
+      const z = Math.exp(lz0 + (lz1 - lz0) * e)
+      const cx = c0.x + (c1.x - c0.x) * e
+      const cy = c0.y + (c1.y - c0.y) * e
+      moveCamera({ zoom: z, panX: w / 2 / z - cx, panY: h / 2 / z - cy }, { commit: t >= 1 ? 'now' : 'none' })
+      if (t < 1) cameraAnimRef.current.raf = requestAnimationFrame(tick)
+      else cameraAnimRef.current.raf = null
+    }
+    cameraAnimRef.current.raf = requestAnimationFrame(tick)
+  }, [cancelCameraAnim, getViewportSize, moveCamera])
 
   const fitZoomForBox = useCallback((box, zoomScale = 0.95) => {
     const { w, h } = getViewportSize()
@@ -4105,14 +3092,12 @@ const EditorPage = () => {
     const { w: viewportW } = getViewportSize()
 
     // Start state — convert current camera into (u0, w0) world-coord form.
-    const startZoom = camera.zoom
-    const startPanX = camera.panX
-    const startPanY = camera.panY
-    const originX = worldBounds.width / 2
-    const originY = worldBounds.height / 2
+    const startZoom = cameraLiveRef.current.zoom
+    const startPanX = cameraLiveRef.current.panX
+    const startPanY = cameraLiveRef.current.panY
     const { w: vpW, h: vpH } = getViewportSize()
-    const startCenterX = originX + (vpW / 2 - originX) / startZoom - startPanX
-    const startCenterY = originY + (vpH / 2 - originY) / startZoom - startPanY
+    const startCenterX = vpW / 2 / startZoom - startPanX
+    const startCenterY = vpH / 2 / startZoom - startPanY
     // "Width on screen at this zoom" = viewport width / zoom (world units visible)
     const w0 = viewportW / startZoom
     const w1 = viewportW / (viewportW / targetWidth) // = targetWidth (world units to show)
@@ -4121,12 +3106,12 @@ const EditorPage = () => {
     const u1 = [targetWorldCenter[0], targetWorldCenter[1]]
 
     const path = buildVanWijkPath(u0, u1, w0, w1)
-    const totalDuration = Math.max(300, baseDuration * (path.S / 2))
+    // the user's "Slide Transition Speed", whatever the distance (#07)
+    const totalDuration = Math.max(200, baseDuration)
     // (path.S is roughly 1-3 for typical jumps; dividing by 2 keeps the
     //  user-set baseDuration meaningful for "average" jumps.)
 
     const startTime = performance.now()
-    setIsNavigating(true)
 
     const tick = (now) => {
       if (cameraAnimRef.current.token !== myToken) return
@@ -4146,19 +3131,17 @@ const EditorPage = () => {
       // Convert (worldCenter, zoom) back to (panX, panY) using existing helper.
       const { panX, panY } = cameraForCenter(zoomAtS, centerAtS[0], centerAtS[1])
 
-      setCamera({ zoom: zoomAtS, panX, panY })
-      setZoom(Math.round(zoomAtS * 100))
+      moveCamera({ zoom: zoomAtS, panX, panY }, { commit: t >= 1 ? 'now' : 'none' })
 
       if (t < 1) {
         cameraAnimRef.current.raf = requestAnimationFrame(tick)
       } else {
         cameraAnimRef.current.raf = null
-        setIsNavigating(false)
       }
     }
 
     cameraAnimRef.current.raf = requestAnimationFrame(tick)
-  }, [camera.zoom, camera.panX, camera.panY, worldBounds.width, worldBounds.height, getViewportSize, cameraForCenter, setZoom, cancelCameraAnim])
+  }, [getViewportSize, cameraForCenter, cancelCameraAnim, moveCamera])
   // Prezi-style smooth zoom: van Wijk single-curve animation.
   // Replaces the old "pull back and dive" two-stage approach with a
   // mathematically smooth path through (pan, log-zoom) space. Feels
@@ -4179,36 +3162,6 @@ const EditorPage = () => {
     animateCameraVanWijk([targetCenterX, targetCenterY], targetW, navSpeedMs)
   }, [getViewportSize, animateCameraVanWijk, navSpeedMs])
 
-  const updateCameraToBox = useCallback((box, zoomScale = 0.8) => {
-    if (!canvasRef.current || !box) return
-    cancelCameraAnim()
-    const rect = canvasRef.current.getBoundingClientRect()
-    const viewportW = Math.max(360, rect.width)
-    const viewportH = Math.max(280, rect.height)
-
-    // Cap zoom-in at 40 (4000%). The formula already produces a constant
-    // on-screen coverage across frame dimensions — the cap is just a sanity
-    // rail. Previous cap of 10 was too low: a small resized frame (e.g. ~160px
-    // wide) needed ~15× zoom to fill the viewport, was clamped to 10×, and
-    // ended up showing lots of empty background instead of covering the screen.
-    const rawZoom = Math.min((viewportW / box.width) * zoomScale, (viewportH / box.height) * zoomScale)
-    const targetZoom = Math.max(0.05, Math.min(40, rawZoom))
-
-    const worldCenterX = box.x + box.width / 2
-    const worldCenterY = box.y + box.height / 2
-    const originX = worldBounds.width / 2
-    const originY = worldBounds.height / 2
-    const viewportCenterX = viewportW / 2
-    const viewportCenterY = viewportH / 2
-
-    const panX = originX + (viewportCenterX - originX) / targetZoom - worldCenterX
-    const panY = originY + (viewportCenterY - originY) / targetZoom - worldCenterY
-
-    // Always use smooth transitions (CSS handles animation via isNavigating=false)
-    setIsNavigating(false)
-    setCamera({ zoom: targetZoom, panX, panY })
-    setZoom(Math.round(targetZoom * 100))
-  }, [worldBounds.height, worldBounds.width, setZoom, cancelCameraAnim])
 
   const focusOverview = useCallback(() => {
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
@@ -4217,10 +3170,27 @@ const EditorPage = () => {
     setEditorMode('overview')
   }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, animateToFrameTwoStage, setEditorMode])
 
+  // Zoom buttons: smooth zoom around the centre of the view
+  const zoomBy = useCallback((factor) => {
+    const { w, h } = getViewportSize()
+    const cam = cameraLiveRef.current
+    animateCameraTo(zoomAround(cam, clampZoom(cam.zoom * factor), w / 2, h / 2), 220)
+  }, [getViewportSize, animateCameraTo])
+
+  // #52 — the Overview button always shows the overview (it no longer toggles
+  // back to the previously opened slide)
+  const goToOverview = useCallback(() => {
+    focusOverview()
+    setIsFrameFocused(false)
+    setSelectedElementId(null)
+    setEditingTextId(null)
+    setShowTextToolbar(false)
+  }, [focusOverview, setSelectedElementId])
+
 const focusFrameById = useCallback((frameId) => {
     const target = frameMapLayout.find(f => f.id === frameId)
-    if (target) updateCameraToBox(target, 0.96)
-  }, [frameMapLayout, updateCameraToBox])
+    if (target) animateToFrameTwoStage(target, 0.96)
+  }, [frameMapLayout, animateToFrameTwoStage])
 
 // Reset the camera-init flag whenever a template starts loading, so the
   // overview effect below will re-fire after the new template's frames and
@@ -4249,22 +3219,19 @@ const focusFrameById = useCallback((frameId) => {
     // Snap, don't animate — for first-load there's no source position to
     // animate from, and any animation here would be visually jarring.
     cancelCameraAnim()
-    setIsNavigating(true)
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
     const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
     const box = { x: worldBounds.minX, y: worldBounds.minY, width, height }
     // Compute final camera state directly (no animation), same math as
-    // updateCameraToBox but bypassing the CSS transition.
+    // animateToFrameTwoStage but without the animation.
     const targetZoom = fitZoomForBox(box, 0.85)
     const cx = box.x + box.width / 2
     const cy = box.y + box.height / 2
     const { panX, panY } = cameraForCenter(targetZoom, cx, cy)
-    setCamera({ zoom: targetZoom, panX, panY })
-    setZoom(Math.round(targetZoom * 100))
+    moveCamera({ zoom: targetZoom, panX, panY }, { commit: 'now' })
     setEditorMode('overview')
-    // Re-enable CSS transitions for subsequent (non-rAF) interactions.
-    requestAnimationFrame(() => setIsNavigating(false))
-  }, [isTemplateLoading, frameMapLayout.length, worldBounds.minX, worldBounds.minY, worldBounds.maxX, worldBounds.maxY, fitZoomForBox, cameraForCenter, cancelCameraAnim, setZoom, setEditorMode])
+    setIsFrameFocused(false)
+  }, [isTemplateLoading, frameMapLayout.length, worldBounds.minX, worldBounds.minY, worldBounds.maxX, worldBounds.maxY, fitZoomForBox, cameraForCenter, cancelCameraAnim, moveCamera, setEditorMode])
 
 const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     // Skip focus/zoom if user just finished dragging a frame
@@ -4274,38 +3241,28 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     }
 
     if (mode === 'overview') {
-      if (editorMode === 'overview') {
-        // Toggle: exit overview and zoom back to the active frame
-        const target = frameMapLayout.find(f => f.id === activeFrameId)
-        if (target) {
-          animateToFrameTwoStage(target, 0.85)
-        }
-        setIsFrameFocused(true)
-        setEditorMode('frame')
-      } else {
-        // Enter overview
-        focusOverview()
-        setIsFrameFocused(false)
-        setEditorMode('overview')
-      }
+      // #52 — always go to (and stay in) the overview
+      goToOverview()
       pendingFocusModeRef.current = null
       return
     }
 
-    // If we are in overview mode, clicking a slide card should ONLY change the active selection, but NOT exit overview mode!
-    if (editorMode === 'overview') {
+    // In the overview a click only selects the slide (#14); 'open' (double
+    // click in the slide list) zooms into it
+    if (editorMode === 'overview' && mode !== 'open') {
       setActiveFrameId(frameId)
+      setIsFrameFocused(true)
       return
     }
+    if (mode === 'open') mode = 'frame'
 
     // Same-frame click. setActiveFrameId won't trigger the zoom-on-change
     // useEffect (no state change), so handle the camera move inline.
     if (frameId === activeFrameId) {
       if (mode === 'frame') {
         const target = frameMapLayout.find(f => f.id === frameId)
-        // Re-clicking the active frame: just snap-zoom in single-stage. There's
-        // nothing to "fly between", so the two-stage arc would feel weird.
-        if (target) updateCameraToBox(target, 0.85)
+        // every move to a slide runs at the user's transition speed
+        if (target) animateToFrameTwoStage(target, 0.85)
         setIsFrameFocused(true)
       }
       pendingFocusModeRef.current = null
@@ -4330,36 +3287,43 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     pendingFocusModeRef.current = mode
     setActiveFrameId(frameId)
     setEditorMode(mode)
-  }, [setActiveFrameId, activeFrameId, editorMode, frameMapLayout, updateCameraToBox, focusOverview, animateToFrameTwoStage, setEditorMode, setIsFrameFocused])
+  }, [setActiveFrameId, activeFrameId, editorMode, frameMapLayout, goToOverview, animateToFrameTwoStage, setEditorMode, setIsFrameFocused])
 
-  // #01 — Single click selects, double-click zooms to frame
+  // #14 / #50 — a single click only selects the slide (clear blue outline,
+  // resize handles) and never zooms or navigates. A click right after
+  // dragging the slide keeps it selected.
   const handleFrameSingleClick = useCallback((frameId) => {
     pendingFocusModeRef.current = null
+    const wasOpen = editorMode === 'frame' && frameId === activeFrameId && isFrameFocused
     setActiveFrameId(frameId)
-    setSelectedElementId(null)
-    setShowTextToolbar(false)
-    setEditingTextId(null)
-    // Only set focused and expand panel if we are NOT in overview mode!
-    if (editorMode !== 'overview') {
-      setIsFrameFocused(true)
-      setRightPanelCollapsed(false)
+    setIsFrameFocused(true)
+    if (!wasOpen) {
+      setSelectedElementId(null)
+      setShowTextToolbar(false)
+      setEditingTextId(null)
+    } else {
+      // clicking the open slide's background deselects its objects
+      setSelectedElementId(null)
+      setShowTextToolbar(false)
     }
-  }, [editorMode, setActiveFrameId, setSelectedElementId, setShowTextToolbar, setEditingTextId, setIsFrameFocused, setRightPanelCollapsed])
+    // Clicking another slide while one is open returns to slide management
+    if (editorMode === 'frame' && frameId !== activeFrameId) setEditorMode('overview')
+  }, [editorMode, activeFrameId, isFrameFocused, setActiveFrameId, setSelectedElementId, setShowTextToolbar, setEditingTextId, setIsFrameFocused, setEditorMode])
 
+  // #26 — double-clicking anywhere on a slide opens (zooms into) it, from the
+  // overview or from another slide. Objects on the open slide keep their own
+  // double-click (edit text etc.).
   const handleFrameDoubleClick = useCallback((frameId) => {
-    if (editorMode === 'overview') return // Block double click zoom in overview mode
-    // Double-click zooms into the frame
+    if (didFrameDragRef.current) { didFrameDragRef.current = false; return }
     pendingFocusModeRef.current = 'frame'
+    const target = frameMapLayout.find(f => f.id === frameId)
+    // same pace as every other slide transition (the user's setting)
+    if (target) animateToFrameTwoStage(target, 0.85)
     setActiveFrameId(frameId)
-    // Re-focus so borders/handles/panel come back
     setIsFrameFocused(true)
     setRightPanelCollapsed(false)
-    const target = frameMapLayout.find(f => f.id === frameId)
-    if (target) {
-      updateCameraToBox(target, 0.85)
-    }
     setEditorMode('frame')
-  }, [editorMode, setActiveFrameId, frameMapLayout, updateCameraToBox, setEditorMode])
+  }, [setActiveFrameId, frameMapLayout, animateToFrameTwoStage, setEditorMode, setIsFrameFocused])
 
   // Wrap addFrame so new slide lands adjacent to the currently active frame
   const handleAddFrame = useCallback((templateType) => {
@@ -4389,68 +3353,124 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
     setEditorMode('frame')
   }, [addFrame, frameMapLayout, activeFrameId, frames.length, animateToFrameTwoStage, setIsFrameFocused, setEditorMode])
 
-  // Find a non-overlapping adjacent slot for a duplicated frame.
-  // Tries Right → Below → Left → Above (in that order). Falls back to
-  // "far right of all existing frames" if every adjacent slot is occupied.
-  // Returns a layout object {x, y, width, height} that the caller can pass
-  // to duplicateFrame.
-  const findFreeAdjacentLayout = useCallback((sourceFrameId) => {
+  // #29 — a duplicated slide is always placed directly below the original
+  // (same size, same left edge, with a gap). If that spot overlaps any existing
+  // slide, we scan downward until we find a completely clear rectangle.
+  const findDuplicateLayout = useCallback((sourceFrameId) => {
     const source = frameMapLayout.find(f => f.id === sourceFrameId)
     if (!source) return null
 
-    const GAP_X = 60
-    const GAP_Y = 40
-    const w = source.width
-    const h = source.height
+    const GAP = Math.max(20, Math.round(source.height * 0.12))
+    const { width, height } = source
 
-    // Build list of all existing frame rects (excluding the source itself
-    // is fine — overlapping the source you're copying from is meaningless).
-    const others = frameMapLayout.filter(f => f.id !== sourceFrameId)
+    // Check if a candidate rect overlaps any existing frame
+    const overlaps = (candY) => frameMapLayout.some(b =>
+      source.x < b.x + b.width &&
+      source.x + width > b.x &&
+      candY < b.y + b.height &&
+      candY + height > b.y
+    )
 
-    const overlaps = (a, others) => others.some(b => (
-      a.x < b.x + b.width &&
-      a.x + a.width > b.x &&
-      a.y < b.y + b.height &&
-      a.y + a.height > b.y
-    ))
+    // Start directly below the source with a gap
+    let candY = source.y + source.height + GAP
 
-    // Candidate slots in priority order: right, below, left, above.
-    const candidates = [
-      { x: source.x + source.width + GAP_X, y: source.y, width: w, height: h }, // right
-      { x: source.x, y: source.y + source.height + GAP_Y, width: w, height: h }, // below
-      { x: source.x - source.width - GAP_X, y: source.y, width: w, height: h }, // left
-      { x: source.x, y: source.y - source.height - GAP_Y, width: w, height: h }, // above
-    ]
-
-    for (const cand of candidates) {
-      if (!overlaps(cand, others)) return cand
+    // Keep scanning past every blocker until the slot is fully clear.
+    // Using a while loop with a safety cap to avoid infinite loops.
+    let guard = 0
+    while (overlaps(candY) && guard < 500) {
+      guard++
+      // Find the frame that overlaps the current candidate and jump past its bottom
+      const blocker = frameMapLayout.find(b =>
+        source.x < b.x + b.width &&
+        source.x + width > b.x &&
+        candY < b.y + b.height &&
+        candY + height > b.y
+      )
+      if (blocker) {
+        candY = blocker.y + blocker.height + GAP
+      } else {
+        candY += GAP
+      }
     }
 
-    // Fallback: place far-right of all existing frames so it never overlaps
-    // anything (canvas is unbounded — there's always free space to the right).
-    const maxRight = others.reduce((m, f) => Math.max(m, f.x + f.width), source.x + source.width)
-    return {
-      x: maxRight + GAP_X,
-      y: source.y,
-      width: w,
-      height: h,
-    }
+    return { x: source.x, y: candY, width, height }
   }, [frameMapLayout])
 
-  // Sidebar duplicate button → place duplicate at a non-overlapping slot.
+  // Sidebar / keyboard duplicate
   const handleDuplicateFrame = useCallback((frameId) => {
-    const layout = findFreeAdjacentLayout(frameId)
-    duplicateFrame(frameId, layout)
-  }, [findFreeAdjacentLayout, duplicateFrame])
+    const layout = findDuplicateLayout(frameId)
+    const pinned = Object.fromEntries(frameMapLayout.map((f) => [f.id, { x: f.x, y: f.y, width: f.width, height: f.height }]))
+    duplicateFrame(frameId, layout, pinned)
+  }, [findDuplicateLayout, frameMapLayout, duplicateFrame])
+
+  const textToolbarVisible = showTextToolbar && (selectedElement?.type === 'text' || selectedElement?.type === 'shape')
 
   return (
     <div className="h-screen flex flex-col bg-gray-100 relative">
-      {/* Template Loading Overlay */}
+      {/* Loading overlay */}
       {isTemplateLoading && (
         <div className="absolute inset-0 z-[100] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center">
           <div className="w-16 h-16 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4"></div>
-          <h3 className="text-xl font-semibold text-gray-800">Loading Template...</h3>
+          <h3 className="text-xl font-semibold text-gray-800">Opening…</h3>
           <p className="text-gray-500 mt-2 text-sm">Please wait while we set up your workspace</p>
+        </div>
+      )}
+
+      {/* Could not open the project / template */}
+      {loadError && (
+        <div className="absolute inset-0 z-[100] bg-white/90 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white border border-gray-200 rounded-2xl shadow-xl p-6 text-center">
+            <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-red-50 text-red-500 flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">
+              {loadError.kind === 'template' ? "Couldn't load this template" : loadError.kind === 'trashed' ? 'This project is in the Trash' : "Couldn't open this project"}
+            </h3>
+            <p className="text-sm text-gray-500 mb-5">{loadError.message}</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {loadError.kind === 'trashed' ? (
+                <button
+                  onClick={async () => { await restoreUserFile(templateId); retryLoad() }}
+                  className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary-dark"
+                >
+                  Restore and open
+                </button>
+              ) : loadError.kind !== 'missing' && (
+                <button onClick={retryLoad} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary-dark">Try again</button>
+              )}
+              {loadError.kind === 'template' && (
+                <button onClick={applyStarterLayout} className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50">Use a starter layout</button>
+              )}
+              <button onClick={() => navigate('/home')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50">Back to Home</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* The user already has a copy of this template */}
+      {resumeCopy && !loadError && (
+        <div className="absolute inset-0 z-[100] bg-black/40 flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">You already have a copy of this template</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              “{resumeCopy.title}” · {resumeCopy.frameCount} slide{resumeCopy.frameCount === 1 ? '' : 's'} · last edited {resumeCopy.updatedAt ? new Date(resumeCopy.updatedAt).toLocaleString() : 'recently'}
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { setResumeCopy(null); navigate(`/editor/${resumeCopy.id}`, { replace: true }) }}
+                className="w-full px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary-dark"
+              >
+                Continue my copy
+              </button>
+              <button
+                onClick={startNewTemplateCopy}
+                className="w-full px-4 py-2.5 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Start a new copy
+              </button>
+              <button onClick={() => navigate('/home')} className="w-full px-4 py-2 text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4463,7 +3483,8 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
         }}
       />
       {/* Top Header Bar */}
-      <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-3 sm:px-4 relative z-10">
+      {/* z-50: the Share / Present / visibility menus open over the formatting bar (z-40) */}
+      <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-3 sm:px-4 relative z-50">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
             onClick={handleGoHome}
@@ -4571,13 +3592,36 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
 
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-2">
-            <div className="hidden lg:block text-xs text-gray-400">
-              {isSaving ? 'Saving...' : hasUnsavedChanges ? 'Unsaved' : lastSavedTime ? `Saved` : lastSaved ? 'Saved' : 'Unsaved'}
-            </div>
+            {/* Save status (autosave) */}
+            {autosave.status === 'error' ? (
+              <button
+                onClick={handleSaveProject}
+                className="hidden md:flex items-center gap-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 px-2 py-1 rounded-md"
+                title={autosave.error || 'Could not save'}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+                Not saved · Retry
+              </button>
+            ) : (
+              <div
+                className="hidden lg:flex items-center gap-1 text-xs text-gray-400 select-none"
+                title={autosave.lastSavedAt ? `Last saved ${autosave.lastSavedAt.toLocaleTimeString()} · stored in this browser` : 'Changes are saved automatically in this browser'}
+              >
+                {autosave.status === 'saving' ? (
+                  <><span className="w-3 h-3 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin" /> Saving…</>
+                ) : autosave.status === 'dirty' ? (
+                  'Editing…'
+                ) : getSession().projectId ? (
+                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg> Saved</>
+                ) : (
+                  'Autosave on'
+                )}
+              </div>
+            )}
             <button
               onClick={handleSaveProject}
-              disabled={isSaving}
-              title="Save (Ctrl+S)"
+              disabled={autosave.status === 'saving'}
+              title="Save now (Ctrl+S) — changes are also saved automatically"
               className="h-8 px-3 rounded-md border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 transition-all disabled:opacity-50"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4586,6 +3630,13 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                 <polyline points="7 3 7 8 15 8" />
               </svg>
               Save
+            </button>
+            <button
+              onClick={() => { refreshVersions(); setShowVersionHistory(true) }}
+              title="Version history"
+              className="h-8 w-8 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50 flex items-center justify-center transition-all"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 3 3 9 9 9" /><polyline points="12 7 12 12 15 14" /></svg>
             </button>
           </div>
 
@@ -4615,7 +3666,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
             {showPresentDropdown && (
               <div className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-xl shadow-lg py-1 min-w-[200px] z-50">
                 <button
-                  onClick={() => { setShowPresentDropdown(false); navigate(`/present/${templateId || 'new'}`) }}
+                  onClick={() => { setShowPresentDropdown(false); startPresentation(false) }}
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-all"
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -4629,8 +3680,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                 <button
                   onClick={() => {
                     setShowPresentDropdown(false)
-                    const idx = frames.findIndex(f => f.id === activeFrameId)
-                    navigate(`/present/${templateId || 'new'}`, { state: { startSlide: Math.max(0, idx) } })
+                    startPresentation(true)
                   }}
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-all"
                 >
@@ -4687,8 +3737,11 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
         </div>
       </header>
 
-      {/* Text Toolbar (shown when text or shape is selected) */}
-     {showTextToolbar && (selectedElement?.type === 'text' || selectedElement?.type === 'shape') && (
+      {/* Formatting bar — its row is always reserved (like PowerPoint's
+          ribbon) so selecting an object never shifts the canvas; a shifted
+          canvas made the second click of a double-click miss the object. */}
+      <div className="h-12 flex-shrink-0 relative z-40 bg-white border-b border-gray-200">
+     {textToolbarVisible && (
         <TextToolbar
           element={{ ...selectedElement, ...selectionFormatting }}
           onUpdate={(updates) => {
@@ -4712,7 +3765,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                 updateElement(selectedElementId, containerUpdates)
               }
             } else {
-              updateElement(selectedElementId, updates)
+              applyBoxFormatting(selectedElementId, updates)
             }
           }}
           onAnimationChange={(animation) => {
@@ -4722,13 +3775,20 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       )}
 
       {/* TextToolbar bound to the project Header — visible only when header is selected. */}
-      {headerSelected && header && (
+      {!textToolbarVisible && headerSelected && header && (
         <TextToolbar
           element={{ ...header, type: 'text' }}
           onUpdate={(updates) => updateHeader(updates)}
           onAnimationChange={() => { /* header doesn't animate */ }}
         />
       )}
+
+        {!textToolbarVisible && !(headerSelected && header) && (
+          <div className="h-12 flex items-center px-4 text-xs text-gray-400 select-none">
+            Select text, a shape or the header to format it · double-click text to edit
+          </div>
+        )}
+      </div>
 
       {showShapeOptions && (
         <div className="dropdown-options absolute top-24 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-xl shadow-lg p-5 z-30 w-[420px] max-h-[500px] overflow-y-auto">
@@ -5293,13 +4353,17 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
           ref={canvasRef}
           className={`flex-1 flex flex-col canvas-area relative ${isDragOver ? 'bg-primary/10' : ''} ${isPanning && !selectedElementId ? (isDraggingPan ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
           style={{
-            background: editorBgImage
-              ? `radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px), url("${editorBgImage}") center/cover no-repeat`
-              : `radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px)`,
-            backgroundColor: editorBgImage 
-              ? '#111827' // or another default
-              : ((frames[0]?.backgroundColor && frames[0]?.backgroundColor !== 'transparent') ? frames[0].backgroundColor : '#f5f5f2'),
+            // (longhand properties only — mixing the `background` shorthand
+            // with longhands makes React drop values on re-render)
+            backgroundImage: editorBgImage
+              ? `radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px), url("${editorBgImage}")`
+              : 'radial-gradient(circle, rgba(0,0,0,0.15) 1.5px, transparent 1.5px)',
+            backgroundColor: editorBgImage
+              ? '#111827'
+              : ((frames[0]?.backgroundColor && frames[0]?.backgroundColor !== 'transparent' && !String(frames[0].backgroundColor).includes('gradient')) ? frames[0].backgroundColor : '#f5f5f2'),
             backgroundSize: editorBgImage ? '28px 28px, cover' : '28px 28px',
+            backgroundPosition: editorBgImage ? '0 0, center' : '0 0',
+            backgroundRepeat: editorBgImage ? 'repeat, no-repeat' : 'repeat',
             minHeight: 0,
             overflow: 'hidden',
             transition: 'all 0.2s ease',
@@ -5309,7 +4373,6 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
           onDoubleClick={handleCanvasDoubleClick}
           onContextMenu={handleContextMenu}
           onPointerDown={handlePanStart}
-          onWheel={handleWheel}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -5326,7 +4389,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
             </div>
           )}
           {/* Infinite canvas viewport */}
-          <div className="flex-1 min-h-0 relative overflow-hidden">
+          <div ref={viewportRef} className="flex-1 min-h-0 relative overflow-hidden">
             {/* Fixed background rectangle — stays put relative to the viewport
                 while the scaled world (slides) pan/zoom behind/above it.
                 Rendered OUTSIDE the scale transform so it's visually static. */}
@@ -5343,15 +4406,16 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
               />
             )}
             <div
+              ref={worldLayerRef}
               className="absolute left-0 top-0"
               style={{
                 width: `${worldBounds.width}px`,
                 height: `${worldBounds.height}px`,
-                transform: `scale(${camera.zoom}) translate(${camera.panX}px, ${camera.panY}px)`,
-                transformOrigin: 'center center',
-                // Nav speed driven by user slider (navSpeedMs)
-                transition: isNavigating ? 'none' : `transform ${navSpeedMs}ms cubic-bezier(0.4, 0, 0.2, 1)`,
-               zIndex: 1,
+                // written directly by moveCamera while the camera moves
+                transform: cameraTransform(cameraLiveRef.current),
+                transformOrigin: '0 0',
+                // will-change is set only while the camera moves (see moveCamera, #34)
+                zIndex: 1,
               }}
             >
               {/* ===== Project Header (singleton, draggable) ===== */}
@@ -5403,14 +4467,12 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                           setEditingTextId(null)
                         }
                         if (didDrag) {
-                          const worldDx = dx / camera.zoom
-                          const worldDy = dy / camera.zoom
+                          const worldDx = dx / cameraLiveRef.current.zoom
+                          const worldDy = dy / cameraLiveRef.current.zoom
                           updateHeader({ x: startHX + worldDx, y: startHY + worldDy })
                         }
                       }
                       const onUp = () => {
-                        window.removeEventListener('mousemove', onMove)
-                        window.removeEventListener('mouseup', onUp)
                         window.removeEventListener('pointermove', onMove)
                         window.removeEventListener('pointerup', onUp)
                         if (!didDrag) {
@@ -5421,8 +4483,6 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                           setEditingTextId(null)
                         }
                       }
-                      window.addEventListener('mousemove', onMove)
-                      window.addEventListener('mouseup', onUp)
                       window.addEventListener('pointermove', onMove)
                       window.addEventListener('pointerup', onUp)
                       e.stopPropagation()
@@ -5524,11 +4584,14 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                 const selectedVisual = selected && isFrameFocused
                 const frameData = frames.find(f => f.id === frameBox.id)
                 const frameElements = selected ? elements : (frameData?.elements || [])
+                // #05 — slide content is only editable when the slide is open
+                // (zoomed in). In the overview slides are managed as a whole.
+                const contentEditable = selected && isFrameFocused && editorMode === 'frame'
                 // Frame 0 is always the hero/overview — check by index not by preview text
                 // All frames including the first (hero) are now resizable and draggable
                 const isOverviewFrame = false // removed restriction — hero frame is now also resizable
                 // Resize cursor for the active frame border area
-                const frameCursor = draggingFrameId === frameBox.id ? 'grabbing' : 'grab'
+                const frameCursor = draggingFrameId === frameBox.id ? 'grabbing' : (contentEditable ? 'default' : 'grab')
                 // Bug 2: counter-scale border width and border radius by camera
                 // zoom so they render at the SAME screen size regardless of how
                 // zoomed-in the canvas is. Without this, at zoom 10× a 2px
@@ -5562,14 +4625,12 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                       className="absolute inset-0"
                       style={{
                         cursor: frameCursor,
+                        userSelect: contentEditable ? undefined : 'none',
+                        WebkitUserSelect: contentEditable ? undefined : 'none',
                         border: selectedVisual ? `${visualBorderWidth}px solid #1a73e8` : `${visualBorderWidth}px solid #e5e7eb`,
                         borderRadius: `${visualBorderRadius}px`,
                         opacity: 1,
-                        background: frameData?.backgroundImage
-                          ? `url("${frameData.backgroundImage}") center/cover no-repeat`
-                          : (frameData?.backgroundColor && frameData.backgroundColor !== 'transparent'
-                              ? frameData.backgroundColor
-                              : (editorBgImage ? 'transparent' : '#ffffff')),
+                        ...getFrameBackgroundStyle(frameData, { editorBackground: editorBgImage }),
                         boxShadow: selectedVisual ? '0 14px 40px rgba(15, 23, 42, 0.18)' : '0 8px 24px rgba(15, 23, 42, 0.12)',
                         overflow: 'hidden',
                         transition: 'border 0.15s, box-shadow 0.15s',
@@ -5582,22 +4643,29 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                       height: SLIDE_HEIGHT,
                       transform: `scale(${Math.min(frameBox.width / SLIDE_WIDTH, frameBox.height / SLIDE_HEIGHT)})`,
                       transformOrigin: 'top left',
-                      pointerEvents: (selected && isFrameFocused) ? 'auto' : 'none'
+                      pointerEvents: contentEditable ? 'auto' : 'none'
                     }}>
-                      {/* Canvas Elements */}
-                      {frameElements.map((element) => (
+                      {/* Slides that are not open are drawn by the shared (memoised)
+                          renderer — cheap to re-render while panning / zooming */}
+                      {!contentEditable && (
+                        <SlideView frame={frameData} showBackground={false} showPlaceholders />
+                      )}
+                      {/* Canvas Elements (the open slide) */}
+                      {contentEditable && frameElements.map((element) => (
                         <div
                           key={`${element.id}-${selected ? animationKey : 'static'}`}
+                          data-editor-element-id={element.id}
                           onClick={(e) => handleElementClick(element, e)}
                           onDoubleClick={(e) => handleElementDoubleClick(element, e)}
                           onPointerDown={(e) => {
                             e.stopPropagation()
-                            if (!isResizing && editingTextId !== element.id && !element.isPlaceholder) {
+                            if (!isResizing && editingTextId !== element.id && !element.isPlaceholder && !element.locked) {
                               handleDragStart(e, element)
                             }
                           }}
+                          onContextMenu={() => { if (selectedElementId !== element.id) setSelectedElementId(element.id) }}
                           className={`absolute transition-shadow duration-150 ${isDragging && selectedElementId === element.id ? 'is-dragging opacity-90 shadow-lg' : ''
-                            } ${editingTextId === element.id ? 'cursor-text is-editing' : (element.isPlaceholder ? 'cursor-text' : 'cursor-move')
+                            } ${editingTextId === element.id ? 'cursor-text is-editing' : (element.isPlaceholder ? 'cursor-text' : (element.locked ? 'cursor-default' : 'cursor-move'))
                             } ${selectedElementId === element.id
                               ? 'ring-2 ring-[#0078d7] ring-offset-1 z-50'
                               : 'hover:ring-2 hover:ring-[#0078d7]/30'
@@ -5608,13 +4676,23 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                             width: element.width,
                             height: (editingTextId === element.id && element.type === 'text') ? 'auto' : element.height,
                             minHeight: (editingTextId === element.id && element.type === 'text') ? element.height : undefined,
+                            display: (editingTextId === element.id && element.type === 'text') ? 'flex' : undefined,
+                            flexDirection: 'column',
+                            transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
+                            opacity: element.opacity != null && Number(element.opacity) < 100 ? Math.max(0, Number(element.opacity)) / 100 : undefined,
                             ...getAnimationStyle(element),
                           }}
                         >
                           {renderElement(element)}
 
+                          {/* Locked objects (PowerPoint "Lock"; imported master/layout art) */}
+                          {selectedElementId === element.id && element.locked && (
+                            <div className="absolute -top-3 -right-3 w-6 h-6 rounded-full bg-white border border-gray-300 shadow flex items-center justify-center pointer-events-none" style={{ transform: `scale(${1 / Math.max(0.2, camera.zoom * (frameBox.width / SLIDE_WIDTH))})` }} title="Locked — right-click to unlock">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#374151" strokeWidth="2.2"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+                            </div>
+                          )}
                           {/* #09 — Resize Handles: clean minimal directional arrows at corners/edges */}
-                          {selectedElementId === element.id && !editingTextId && (
+                          {selectedElementId === element.id && !editingTextId && !element.locked && (
                             <>
                               {/* Corner handles — small transparent hit areas with directional arrows */}
                               <div className="absolute -top-2.5 -left-2.5 w-5 h-5 cursor-nw-resize flex items-center justify-center opacity-60 hover:opacity-100 transition-opacity" onPointerDown={(e) => handleResizeStart(e, 'nw', element)} title="Resize">
@@ -5771,7 +4849,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
               </button>
 
               <button
-                onClick={() => frames[0] && handleFrameFocus(frames[0].id, 'overview')}
+                onClick={goToOverview}
                 className="text-sm hover:text-gray-900 transition-all"
                 title="Overview"
               >
@@ -5779,29 +4857,9 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
               </button>
 
               <button
-                onClick={() => {
-                  // #04 — Smooth zoom with CSS transition
-                  setIsNavigating(false) // enable CSS transition
-                  // Geometric zoom: divide by 1.15 and clamp at 0.05
-                  const next = Math.max(0.05, Math.min(40.0, camera.zoom / 1.15))
-                  if (canvasRef.current) {
-                    const rect = canvasRef.current.getBoundingClientRect()
-                    const originX = worldBounds.width / 2
-                    const originY = worldBounds.height / 2
-                    const viewportCenterX = rect.width / 2
-                    const viewportCenterY = rect.height / 2
-                    setCamera(prev => ({
-                      zoom: next,
-                      panX: prev.panX + (viewportCenterX - originX) * (1 / next - 1 / prev.zoom),
-                      panY: prev.panY + (viewportCenterY - originY) * (1 / next - 1 / prev.zoom)
-                    }))
-                  } else {
-                    setCamera(prev => ({ ...prev, zoom: next }))
-                  }
-                  setZoom(Math.round(next * 100))
-                }}
+                onClick={() => zoomBy(1 / 1.25)}
                 className="text-lg hover:text-gray-900 transition-all"
-                title="Zoom out"
+                title="Zoom out (Ctrl + −)"
               >
                 −
               </button>
@@ -5809,35 +4867,15 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
               <button
                 onClick={focusOverview}
                 className="text-sm font-semibold hover:text-gray-900 transition-all"
-                title="Reset zoom"
+                title="Fit all slides (Overview)"
               >
                 {Math.round(camera.zoom * 100)}%
               </button>
 
               <button
-                onClick={() => {
-                  // #04 — Smooth zoom with CSS transition
-                  setIsNavigating(false) // enable CSS transition
-                  // Geometric zoom: multiply by 1.15 and clamp at 40.0
-                  const next = Math.max(0.05, Math.min(40.0, camera.zoom * 1.15))
-                  if (canvasRef.current) {
-                    const rect = canvasRef.current.getBoundingClientRect()
-                    const originX = worldBounds.width / 2
-                    const originY = worldBounds.height / 2
-                    const viewportCenterX = rect.width / 2
-                    const viewportCenterY = rect.height / 2
-                    setCamera(prev => ({
-                      zoom: next,
-                      panX: prev.panX + (viewportCenterX - originX) * (1 / next - 1 / prev.zoom),
-                      panY: prev.panY + (viewportCenterY - originY) * (1 / next - 1 / prev.zoom)
-                    }))
-                  } else {
-                    setCamera(prev => ({ ...prev, zoom: next }))
-                  }
-                  setZoom(Math.round(next * 100))
-                }}
+                onClick={() => zoomBy(1.25)}
                 className="text-lg hover:text-gray-900 transition-all"
-                title="Zoom in"
+                title="Zoom in (Ctrl + +)"
               >
                 +
               </button>
@@ -5952,12 +4990,12 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-500 block mb-1">Opacity ({selectedElement.opacity || 100}%)</label>
+                      <label className="text-xs text-gray-500 block mb-1">Opacity ({selectedElement.opacity ?? 100}%)</label>
                       <input
                         type="range"
                         min="0"
                         max="100"
-                        value={selectedElement.opacity || 100}
+                        value={selectedElement.opacity ?? 100}
                         onChange={(e) => updateElement(selectedElementId, { opacity: parseInt(e.target.value) })}
                         className="w-full"
                       />
@@ -5974,6 +5012,80 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                       />
                     </div>
                   </>
+                )}
+
+                {/* Table — #62 border thickness, colour, style; rows/columns */}
+                {selectedElement.type === 'table' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-500 block mb-1.5">Rows & columns <span className="text-gray-400">(click a cell first)</span></label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[['rowAbove', 'Insert row above'], ['rowBelow', 'Insert row below'], ['colLeft', 'Insert column left'], ['colRight', 'Insert column right'], ['delRow', 'Delete row'], ['delCol', 'Delete column']].map(([op, label]) => (
+                          <button
+                            key={op}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => tableEdit(selectedElement, op)}
+                            className={`px-2 py-1.5 text-[11px] rounded border transition-all ${op.startsWith('del') ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-gray-200 text-gray-700 hover:bg-gray-50'}`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 block mb-1.5">Border pen</label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={tablePen.width}
+                          onChange={(e) => setTablePen((p) => ({ ...p, width: parseFloat(e.target.value) }))}
+                          className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded"
+                          title="Pen weight"
+                        >
+                          {[0.5, 1, 1.5, 2, 3, 4.5, 6, 8].map((w) => <option key={w} value={w}>{w} px</option>)}
+                        </select>
+                        <select
+                          value={tablePen.style}
+                          onChange={(e) => setTablePen((p) => ({ ...p, style: e.target.value }))}
+                          className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded"
+                          title="Pen style"
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="dashed">Dashed</option>
+                          <option value="dotted">Dotted</option>
+                        </select>
+                        <input
+                          type="color"
+                          value={/^#[0-9a-f]{6}$/i.test(tablePen.color) ? tablePen.color : '#374151'}
+                          onChange={(e) => setTablePen((p) => ({ ...p, color: e.target.value }))}
+                          className="w-9 h-8 cursor-pointer rounded border border-gray-200"
+                          title="Pen colour"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 block mb-1.5">Apply borders</label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {tableOps.BORDER_SCOPES.map((b) => (
+                          <button
+                            key={b.id}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => tableBorders(selectedElement, b.id)}
+                            className="px-2 py-1.5 text-[11px] rounded border border-gray-200 text-gray-700 hover:bg-gray-50 transition-all"
+                          >
+                            {b.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedElement.headerRow}
+                        onChange={(e) => { updateElement(selectedElementId, { headerRow: e.target.checked }); commitHistory() }}
+                      />
+                      Header row (bold, shaded)
+                    </label>
+                  </div>
                 )}
 
                 {/* Icon Properties - Simplified */}
@@ -6100,32 +5212,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                         onClick={() => handleFrameFocus(next.id, 'frame')}
                         title="Click to go to next frame"
                       >
-                        <div className="relative aspect-[16/9] rounded-md border border-gray-200 bg-white overflow-hidden">
-                          <div className="absolute inset-0" style={{
-                            backgroundColor: next.backgroundColor || '#ffffff',
-                            backgroundImage: next.backgroundImage ? `url(${next.backgroundImage})` : 'none',
-                            backgroundSize: 'cover',
-                            backgroundPosition: 'center',
-                          }} />
-                          {(next.elements || []).slice(0, 6).map(el => {
-                            if (!el || el.isPlaceholder) return null
-                            return (
-                              <div key={el.id} className="absolute overflow-hidden" style={{
-                                left: `${(el.x / 1280) * 100}%`,
-                                top: `${(el.y / 720) * 100}%`,
-                                width: `${((el.width || 100) / 1280) * 100}%`,
-                                height: `${((el.height || 60) / 720) * 100}%`,
-                                background: el.type === 'text' ? 'transparent' : '#d1d5db',
-                                color: '#111827',
-                                fontSize: '6px',
-                                fontWeight: 700,
-                                borderRadius: '1px',
-                              }}>
-                                {el.type === 'text' ? (el.content || '').slice(0, 20) : null}
-                              </div>
-                            )
-                          })}
-                        </div>
+                        <SlideThumbnail frame={next} editorBackground={editorBgImage} className="rounded-md border border-gray-200 bg-white" />
                         <p className="text-center text-[11px] font-medium text-gray-600 mt-1.5">
                           {next.title || `Frame ${currentIndex + 2}`}
                         </p>
@@ -6190,19 +5277,19 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
                             // Apply to all frames removed
                           }}
                           className={`relative aspect-[16/9] rounded-md overflow-hidden border-2 transition-all hover:scale-105 hover:shadow-md ${
-                            editorBgImage === imgPath
+                            sameBackground(editorBgImage, imgPath)
                               ? 'border-primary ring-2 ring-primary/30 shadow-md'
                               : 'border-gray-200 hover:border-gray-400'
                           }`}
                           title={`${topic} ${idx + 1}`}
                         >
                           <img
-                            src={imgPath}
+                            src={thumbBackground(imgPath)}
                             alt={`${topic} ${idx + 1}`}
                             className="w-full h-full object-fill"
                             loading="lazy"
                           />
-                          {editorBgImage === imgPath && (
+                          {sameBackground(editorBgImage, imgPath) && (
                             <div className="absolute inset-0 bg-primary/10 flex items-center justify-center">
                               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
                                 <polyline points="20 6 9 17 4 12" />
@@ -6271,6 +5358,7 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
           onClose={() => setContextMenu(null)}
           onAction={handleContextMenuAction}
           hasSelection={!!selectedElementId}
+          isLocked={!!selectedElement?.locked}
           currentBackground={activeFrame?.backgroundColor || '#ffffff'}
           currentColor={selectedElement?.fill || selectedElement?.color || '#2E7D32'}
         />
@@ -6414,35 +5502,49 @@ const handleFrameFocus = useCallback((frameId, mode = 'frame') => {
       {/* Web Image Search Modal */}
       {/* Version History Panel */}
       {showVersionHistory && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Version History</h3>
-              <button onClick={() => setShowVersionHistory(false)} className="p-1 hover:bg-gray-100 rounded">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowVersionHistory(false)}>
+          <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-xl max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-lg font-semibold">Version history</h3>
+              <button onClick={() => setShowVersionHistory(false)} className="p-1 hover:bg-gray-100 rounded" aria-label="Close">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
             </div>
+            <p className="text-xs text-gray-500 mb-4">A snapshot is also kept automatically each time you start editing. Restoring can be undone with Ctrl+Z.</p>
             <button
-              onClick={() => { saveVersion(); toast.success('Version saved'); }}
+              onClick={async () => {
+                const ok = await autosave.flush()
+                if (!ok || !getSession().projectId) { toast.info('Make a change first — then you can save versions of this project'); return }
+                const name = window.prompt('Name this version', `Version ${new Date().toLocaleString()}`)
+                if (name === null) return
+                const v = await saveVersion(name.trim())
+                if (v) toast.success('Version saved')
+              }}
               className="w-full px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-all mb-4"
             >
-              Save Current Version
+              Save current version
             </button>
             <div className="flex-1 overflow-y-auto space-y-2">
               {versionHistory.length === 0 ? (
-                <p className="text-center text-gray-400 py-8">No versions saved yet</p>
+                <p className="text-center text-gray-400 py-8">No versions yet</p>
               ) : (
-                versionHistory.slice().reverse().map((version) => (
-                  <div key={version.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <div>
-                      <p className="text-sm font-medium">{version.name}</p>
-                      <p className="text-xs text-gray-500">{new Date(version.timestamp).toLocaleString()}</p>
+                versionHistory.map((version) => (
+                  <div key={version.id} className="flex items-center justify-between gap-3 p-3 bg-gray-50 rounded-lg">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{version.name}</p>
+                      <p className="text-xs text-gray-500">
+                        {new Date(version.createdAt).toLocaleString()} · {version.frameCount} slide{version.frameCount === 1 ? '' : 's'}{version.auto ? ' · automatic' : ''}
+                      </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-shrink-0">
                       <button
-                        onClick={() => { loadVersion(version.id); setShowVersionHistory(false); toast.success('Version restored'); }}
+                        onClick={async () => {
+                          const ok = await loadVersion(version.id)
+                          if (ok) { setShowVersionHistory(false); toast.success('Version restored — press Ctrl+Z to undo') }
+                          else toast.error('This version could not be restored')
+                        }}
                         className="px-3 py-1 text-xs bg-primary text-white rounded hover:bg-primary-dark transition-all"
                       >
                         Restore

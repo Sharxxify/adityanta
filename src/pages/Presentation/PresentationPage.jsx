@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { useEditor } from '../../context/EditorContext'
+import { useApp } from '../../context/AppContext'
+import { SlideElement, getFrameBackgroundStyle, SLIDE_WIDTH, SLIDE_HEIGHT } from '../../components/Slide/SlideView'
 import { computeSnakePosition } from '../../utils/snakeLayout'
+import { displayBackground } from '../../utils/backgrounds'
+import { viewTween, viewFromCamera, cameraFromView, viewForBox, readNavSpeedMs, SLIDE_FIT, OVERVIEW_FIT } from '../../utils/presentationCamera'
 
 const WORLD_PADDING = 220
 const PREZI_LAYOUT_PRESETS = [
@@ -122,6 +126,70 @@ const buildInterFrameConnectors = (layout) => {
   return connectors
 }
 
+
+// ─── Eraser (#56) ─────────────────────────────────────────────────────────
+// Erases only the part of a stroke under the eraser (like PowerPoint's
+// "Eraser" pen in the slide show): points within the radius are removed and
+// the stroke is split into the pieces that remain. Distances are measured in
+// slide-width units with the 16:9 aspect taken into account.
+const ERASER_RADIUS = 0.018
+const ASPECT_Y = 9 / 16
+const eraseDist = (a, b) => Math.hypot(a.x - b.x, (a.y - b.y) * ASPECT_Y)
+
+// distance from p to segment ab
+const distToSegment = (p, a, b) => {
+  const ax = a.x
+  const ay = a.y * ASPECT_Y
+  const bx = b.x
+  const by = b.y * ASPECT_Y
+  const px = p.x
+  const py = p.y * ASPECT_Y
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+}
+
+// Densify a stroke so long straight segments can be cut in the middle
+const densify = (points, step = ERASER_RADIUS / 3) => {
+  const out = []
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]
+    if (i > 0) {
+      const q = points[i - 1]
+      const d = eraseDist(p, q)
+      const n = Math.floor(d / step)
+      for (let k = 1; k < n; k++) out.push({ x: q.x + ((p.x - q.x) * k) / n, y: q.y + ((p.y - q.y) * k) / n })
+    }
+    out.push(p)
+  }
+  return out
+}
+
+/** Strokes after erasing around `at` (returns the same array if untouched) */
+const eraseStrokes = (strokes, at, radius = ERASER_RADIUS) => {
+  let changed = false
+  const out = []
+  for (const stroke of strokes) {
+    const pts = stroke.points || []
+    const hit = pts.length === 1
+      ? eraseDist(pts[0], at) < radius
+      : pts.some((p, i) => i > 0 && distToSegment(at, pts[i - 1], p) < radius)
+    if (!hit) { out.push(stroke); continue }
+    changed = true
+    let piece = []
+    for (const p of densify(pts)) {
+      if (eraseDist(p, at) < radius) {
+        if (piece.length > 1) out.push({ ...stroke, points: piece })
+        piece = []
+      } else piece.push(p)
+    }
+    if (piece.length > 1) out.push({ ...stroke, points: piece })
+  }
+  return changed ? out : strokes
+}
+
 // ─── Annotation overlay component ────────────────────────────────────────
 // Renders all strokes (committed + in-progress) for the currently active
 // slide. Reads the active slide's DOM rect on each animation frame so
@@ -224,8 +292,44 @@ const AnnotationOverlay = ({
 const PresentationPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const { frames, editorBackground, savePresentationAnnotations, undo, redo } = useEditor()
+  const { frames, editorBackground, savePresentationAnnotations, undo, redo, getSession, updateSession, loadTemplate, setEditorBackground } = useEditor()
+  const { loadProject, getProject, isUserFilesLoaded } = useApp()
+  const { templateId: routeId } = useParams()
   const startSlide = location.state?.startSlide || 0
+  // Where "exit" goes: the editor of this same project (in overview)
+  const returnTo = location.state?.returnTo || `/editor/${getSession().routeId || routeId || 'new'}`
+
+  // Opened directly (page refresh, bookmark): load the project from storage
+  const [isLoadingProject, setIsLoadingProject] = useState(false)
+  useEffect(() => {
+    if (!routeId || routeId === 'new') return
+    const session = getSession()
+    if (session.key && (session.projectId === routeId || session.routeId === routeId)) return
+    if (!isUserFilesLoaded || !getProject(routeId)) return
+    let cancelled = false
+    setIsLoadingProject(true)
+    loadProject(routeId)
+      .then((project) => {
+        if (cancelled || !project?.frames?.length) return
+        const loaded = loadTemplate({ title: project.title, frames: project.frames, header: project.header })
+        setEditorBackground(project.editorBgImage)
+        updateSession({
+          key: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+          routeId: String(project.id),
+          projectId: String(project.id),
+          sourceTemplateId: project.templateId || null,
+          topic: project.topic || null,
+          thumbnail: project.thumbnail || null,
+          visibility: project.visibility || 'public',
+          autoSnapshotTaken: false,
+          // what is stored now — ink added while presenting is saved on exit
+          baseline: loaded ? { frames: loaded.frames, title: loaded.title, header: loaded.header, editorBgImage: typeof project.editorBgImage === 'string' ? displayBackground(project.editorBgImage) : project.editorBgImage, visibility: project.visibility || 'public' } : null,
+        })
+      })
+      .finally(() => { if (!cancelled) setIsLoadingProject(false) })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId, isUserFilesLoaded])
   const [currentSlideIndex, setCurrentSlideIndex] = useState(startSlide)
   const [hasStarted, setHasStarted] = useState(false)
 
@@ -305,18 +409,27 @@ const PresentationPage = () => {
   const controlsTimeoutRef = useRef(null)
 
   const [camera, setCamera] = useState({ zoom: 1, panX: 0, panY: 0 })
+  // The camera animation writes the transform straight to the DOM each frame
+  // (no React re-render per frame → smooth fly-through); state catches up at
+  // the end of each move.
+  const worldRef = useRef(null)
+  const cameraLiveRef = useRef(camera)
+  const applyCamera = (cam, commit) => {
+    cameraLiveRef.current = cam
+    const world = worldRef.current
+    if (world) {
+      world.style.transform = `scale(${cam.zoom}) translate(${cam.panX}px, ${cam.panY}px)`
+      // #34 — a will-change layer keeps the resolution it was drawn at, so
+      // slides looked blurry after zooming in; keep the hint only while moving
+      world.style.willChange = commit ? 'auto' : 'transform'
+    }
+    if (commit) setCamera(cam)
+  }
 
   // Slide transition speed — read from the same localStorage key the editor
   // writes to, so the presentation honours whatever the user set in the
   // "Slide Transition Speed" slider. Falls back to 3000ms if unset.
-  const [navSpeedMs] = useState(() => {
-    try {
-      const saved = localStorage.getItem('adityanta_nav_speed_ms')
-      const num = Number(saved)
-      if (Number.isFinite(num) && num >= 300 && num <= 3000) return num
-    } catch (_e) { /* ignore */ }
-    return 1500
-  })
+  const [navSpeedMs] = useState(readNavSpeedMs)
 
   const getAnimationClass = (animation) => {
     if (!animation || animation === 'none') return ''
@@ -354,8 +467,10 @@ const PresentationPage = () => {
     return animMap[animation] || ''
   }
 
+  // Every element is drawn by the shared slide renderer (same as the editor,
+  // thumbnails and exports); presentation only adds entrance animations.
   const renderElement = (element, slideKey, elementIndex = 0) => {
-    // Normalise animation — may be a string key or { type, duration } object
+    if (!element || element.isPlaceholder || element.hidden) return null
     const animType = typeof element.animation === 'object'
       ? (element.animation?.type || 'none')
       : (element.animation || 'none')
@@ -368,567 +483,15 @@ const PresentationPage = () => {
       '--anim-duration': `${Math.round(animDuration * 1.35)}ms`,
       '--anim-delay': `${(element.animationDelay || 0) + (elementIndex * 140)}ms`,
     }
-
-    const baseStyle = {
-      position: 'absolute',
-      left: element.x,
-      top: element.y,
-      width: element.width,
-      height: element.height,
-      ...animStyle,
-    }
-
-    switch (element.type) {
-      case 'text':
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            style={{
-              ...baseStyle,
-              fontSize: element.fontSize,
-              fontWeight: element.fontWeight,
-              fontFamily: element.fontFamily || 'Inter',
-              fontStyle: element.fontStyle || 'normal',
-              textDecoration: element.textDecoration || 'none',
-              textAlign: element.textAlign || 'left',
-              color: element.color,
-              display: 'flex',
-              alignItems: element.verticalAlign === 'middle' ? 'center' : element.verticalAlign === 'bottom' ? 'flex-end' : 'flex-start',
-              justifyContent: element.textAlign === 'center' ? 'center' : element.textAlign === 'right' ? 'flex-end' : 'flex-start',
-              whiteSpace: 'pre-wrap',
-              lineHeight: 1.5,
-              paddingTop: element.padding?.top ?? 8,
-              paddingBottom: element.padding?.bottom ?? 8,
-              paddingLeft: element.padding?.left ?? 8,
-              paddingRight: element.padding?.right ?? 8,
-              border: element.borderWidth ? `${element.borderWidth}px solid ${element.borderColor || '#333333'}` : 'none',
-              borderRadius: element.borderRadius ? `${element.borderRadius}px` : 0,
-              backgroundColor: element.backgroundColor || 'transparent',
-            }}
-          >
-            {element.content}
-          </div>
-        )
-
-      case 'shape':
-        const shapeOpacity = (element.opacity || 100) / 100
-        const type = element.shapeType || 'rectangle'
-        let pPageShapeContent
-        switch(type) {
-          case 'circle':
-          case 'oval':
-            pPageShapeContent = (
-              <div
-                key={`${element.id}-${slideKey}`}
-                className={animClass}
-                style={{
-                  ...baseStyle,
-                  backgroundColor: element.fill,
-                  borderRadius: '50%',
-                  opacity: shapeOpacity,
-                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
-                }}
-              />
-            )
-            break
-          case 'roundedRectangle':
-            pPageShapeContent = (
-              <div
-                key={`${element.id}-${slideKey}`}
-                className={animClass}
-                style={{
-                  ...baseStyle,
-                  backgroundColor: element.fill,
-                  borderRadius: `${element.borderRadius ?? 16}px`,
-                  opacity: shapeOpacity,
-                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
-                }}
-              />
-            )
-            break
-          case 'semicircle':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 0 100 A 50 50 0 0 1 100 100 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'triangle':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 200 150" preserveAspectRatio="none">
-                <polygon points="100,0 0,150 200,150" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rightTriangle':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,0 0,100 100,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'parallelogram':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="25,0 100,0 75,100 0,100" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'diamond':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,0 100,50 50,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'pentagon':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 95,38 78,92 22,92 5,38" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'hexagon':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 120 100" preserveAspectRatio="none">
-                <polygon points="30,0 90,0 120,50 90,100 30,100 0,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'octagon':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="30,5 70,5 95,30 95,70 70,95 30,95 5,70 5,30" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cylinder':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 20 L 10 80 A 40 10 0 0 0 90 80 L 90 20 A 40 10 0 0 0 10 20 M 10 20 A 40 10 0 0 0 90 20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'chevronProcess':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,0 75,0 100,50 75,100 0,100 25,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'shield':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 10 L 90 10 L 90 50 Q 90 85 50 95 Q 10 85 10 50 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'waveFlag':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 20 Q 30 10 50 20 T 90 20 L 90 80 Q 70 70 50 80 T 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'folder':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 20 L 40 20 L 50 30 L 90 30 L 90 80 L 10 80 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'stickyNote':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 10 L 90 10 L 90 70 L 70 90 L 10 90 Z M 90 70 L 70 70 L 70 90" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'document':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 15 10 L 70 10 L 85 25 L 85 90 L 15 90 Z M 70 10 L 70 25 L 85 25" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'puzzle':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 20 20 L 40 20 C 40 10, 60 10, 60 20 L 80 20 L 80 40 C 90 40, 90 60, 80 60 L 80 80 L 60 80 C 60 90, 40 90, 40 80 L 20 80 L 20 60 C 10 60, 10 40, 20 40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'leftArrowBlock':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,50 40,15 40,35 100,35 100,65 40,65 40,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rightArrowBlock':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="100,50 60,15 60,35 0,35 0,65 60,65 60,85" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'leftRightArrowBlock':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,50 25,25 25,40 75,40 75,25 100,50 75,75 75,60 25,60 25,75" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'chevronArrowBlock':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,25 50,25 50,10 90,50 50,90 50,75 0,75 40,50" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'pentagonArrowBlock':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="0,35 60,35 60,15 100,50 60,85 60,65 0,65" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'crescent':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 80 15 A 35 35 0 1 0 80 85 A 30 30 0 1 1 80 15" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star4':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,10 60,40 90,50 60,60 50,90 40,60 10,50 40,40" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 61,35 95,35 68,57 79,91 50,70 21,91 32,57 5,35 39,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star6':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 63,28 90,28 72,50 90,72 63,72 50,95 37,72 10,72 28,50 10,28 37,28" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'star8':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 58,35 82,18 65,42 95,50 65,58 82,82 58,65 50,95 42,65 18,82 35,58 5,50 35,42 18,18 42,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'sun':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 53,23 68,14 64,31 81,19 72,36 89,30 76,46 95,50 76,54 89,70 72,64 81,81 64,69 68,86 53,77 50,95 47,77 32,86 36,69 19,81 28,64 11,70 24,54 5,50 24,46 11,30 28,36 19,19 36,31 32,14 47,23" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'teardrop':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 50 10 C 50 10 90 55 90 70 A 40 40 0 0 1 10 70 C 10 55 50 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'ovalSpeech':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 50 10 C 25 10 5 25 5 45 C 5 60 18 73 35 77 L 25 95 L 48 80 C 49 80 50 80 50 80 C 75 80 95 65 95 45 C 95 25 75 10 50 10 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'rectSpeech':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 10 10 L 90 10 L 90 70 L 45 70 L 25 90 L 25 70 L 10 70 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'thoughtBubble':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 30 60 A 15 15 0 0 1 38 35 A 18 18 0 0 1 70 35 A 15 15 0 0 1 78 60 A 12 12 0 0 1 70 75 L 35 75 A 12 12 0 0 1 30 60 Z M 22 83 A 5 5 0 1 1 17 83 A 5 5 0 1 1 22 83 Z M 13 91 A 3 3 0 1 1 10 91 A 3 3 0 1 1 13 91 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cloud':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 25 60 A 15 15 0 0 1 35 35 A 20 20 0 0 1 70 35 A 15 15 0 0 1 80 60 A 12 12 0 0 1 75 80 L 25 80 A 12 12 0 0 1 25 60 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'heart':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 50 30 C 50 10, 10 10, 10 40 C 10 65, 50 90, 50 95 C 50 90, 90 65, 90 40 C 90 10, 50 10, 50 30 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'cross':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="35,5 65,5 65,35 95,35 95,65 65,65 65,95 35,95 35,65 5,65 5,35 35,35" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'flower':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 50,40 C 53,30 63,30 66,40 C 76,37 79,47 70,53 C 79,59 71,69 61,66 C 60,76 50,76 47,66 C 37,69 29,59 38,53 C 29,47 32,37 42,40 C 40,30 50,30 50,40 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'decagram':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polygon points="50,5 57,20 72,12 70,28 85,25 78,39 92,45 81,54 88,70 75,72 77,88 63,83 59,95 48,87 37,95 33,83 19,88 21,72 8,70 15,54 4,45 18,39 11,25 26,28 24,12 39,20" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'roundedFlower':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 50,20 L 53,20 L 55,10 L 61,12 L 59,21 L 64,23 L 69,16 L 74,20 L 69,27 L 73,31 L 80,27 L 83,32 L 76,37 L 78,42 L 86,42 L 86,48 L 77,50 L 77,55 L 85,58 L 83,63 L 75,61 L 72,66 L 77,73 L 73,77 L 66,72 L 62,75 L 63,84 L 57,85 L 55,76 L 50,77 L 48,86 L 42,85 L 44,76 L 39,74 L 33,80 L 29,75 L 34,69 L 31,64 L 23,67 L 21,62 L 28,57 L 27,52 L 18,50 L 18,44 L 27,42 L 28,37 L 20,34 L 22,29 L 30,32 L 33,27 L 28,20 L 33,16 L 38,23 L 43,21 L 43,12 L 49,11 Z M 50,35 A 15,15 0 1 0 50,65 A 15,15 0 1 0 50,35 Z" fill={element.fill} stroke={element.strokeColor} strokeWidth={element.strokeWidth || 0} strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'line':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 200 10" preserveAspectRatio="none">
-                <line x1="0" y1="5" x2="200" y2="5" stroke={element.fill || element.strokeColor} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'arrow':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 200 30" preserveAspectRatio="none">
-                <line x1="0" y1="15" x2="170" y2="15" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 2} strokeLinecap="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-                <polygon points="170,5 200,15 170,25" fill={element.strokeColor || element.fill} />
-              </svg>
-            )
-            break
-          case 'doubleArrow':
-            pPageShapeContent = (
-              <svg key={`${element.id}-${slideKey}`} className={animClass} style={{...baseStyle, opacity: shapeOpacity, transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined}} viewBox="0 0 100 100" preserveAspectRatio="none">
-                <path d="M 12 50 L 88 50 M 28 30 L 8 50 L 28 70 M 72 30 L 92 50 L 72 70" fill="none" stroke={element.strokeColor || element.fill} strokeWidth={element.strokeWidth || 3} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={element.borderStyle === 'dashed' ? '5,5' : undefined} />
-              </svg>
-            )
-            break
-          case 'square':
-          case 'rectangle':
-          case 'tallRectangle':
-          default:
-            pPageShapeContent = (
-              <div
-                key={`${element.id}-${slideKey}`}
-                className={animClass}
-                style={{
-                  ...baseStyle,
-                  backgroundColor: element.fill,
-                  borderRadius: element.borderRadius ? `${element.borderRadius}px` : (type === 'square' || type === 'rectangle' || type === 'tallRectangle' ? '4px' : '0px'),
-                  opacity: shapeOpacity,
-                  border: element.strokeWidth ? `${element.strokeWidth}px ${element.borderStyle || 'solid'} ${element.strokeColor}` : 'none',
-                  transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
-                }}
-              />
-            )
-            break
-        }
-        return pPageShapeContent
-
-      case 'image':
-        return (
-          <img
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            src={element.src || ''}
-            alt="slide content"
-            style={{
-              ...baseStyle,
-              objectFit: 'fill',
-              borderRadius: '4px',
-              display: element.src ? 'block' : 'none',
-            }}
-            onError={(e) => { e.target.style.display = 'none' }}
-          />
-        )
-
-      case 'icon':
-        const iconSize = Math.min(element.width, element.height) * 0.8
-        const iconColor = element.color || '#2E7D32'
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            style={{
-              ...baseStyle,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {element.iconType === 'star' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-              </svg>
-            )}
-            {element.iconType === 'heart' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-              </svg>
-            )}
-            {element.iconType === 'check' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            )}
-            {element.iconType === 'lightning' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-            )}
-            {element.iconType === 'thumbsUp' && (
-              <svg width={iconSize} height={iconSize} viewBox="0 0 24 24" fill={iconColor} stroke="none">
-                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
-              </svg>
-            )}
-          </div>
-        )
-
-      case 'table':
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            style={baseStyle}
-          >
-            <table
-              style={{
-                width: '100%',
-                height: '100%',
-                borderCollapse: 'collapse',
-              }}
-            >
-              <tbody>
-                {Array(element.rows).fill(null).map((_, rowIdx) => (
-                  <tr key={rowIdx}>
-                    {Array(element.cols).fill(null).map((_, colIdx) => (
-                      <td
-                        key={`${rowIdx}-${colIdx}`}
-                        style={{
-                          border: '1px solid #9ca3af',
-                          padding: '8px',
-                          fontSize: '14px',
-                          textAlign: 'center',
-                        }}
-                      >
-                        {element.data?.[rowIdx]?.[colIdx] || ''}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-
-      case 'video':
-        const isYouTube = element.src?.includes('youtube.com') || element.src?.includes('youtu.be')
-        if (!element.src) return null
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            style={{...baseStyle, overflow: 'hidden', borderRadius: '8px'}}
-          >
-            {isYouTube ? (
-              <iframe
-                width="100%"
-                height="100%"
-                src={element.src}
-                style={{ border: 'none' }}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            ) : (
-              <video
-                src={element.src}
-                controls
-                style={{ width: '100%', height: '100%', objectFit: 'fill' }}
-              />
-            )}
-          </div>
-        )
-
-      case 'audio':
-        if (!element.src) return null
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={`${animClass} bg-gray-100 rounded-lg p-4 flex items-center gap-3`}
-            style={baseStyle}
-          >
-            <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center text-white">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M9 18V5l12-2v13" />
-                <circle cx="6" cy="18" r="3" />
-                <circle cx="18" cy="16" r="3" />
-              </svg>
-            </div>
-            <audio controls src={element.src} style={{ flex: 1 }} />
-          </div>
-        )
-
-      case 'drawing':
-        return (
-          <div
-            key={`${element.id}-${slideKey}`}
-            className={animClass}
-            style={{
-              ...baseStyle,
-              pointerEvents: 'none',
-            }}
-          >
-            <svg
-              className="w-full h-full"
-              viewBox="0 0 1280 720"
-              style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
-            >
-              {element.paths?.map((path, pathIdx) => (
-                <path
-                  key={pathIdx}
-                  d={`M ${path.points.map(p => `${p.x} ${p.y}`).join(' L ')}`}
-                  stroke={path.color}
-                  strokeWidth={path.size}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity={path.opacity ?? 1}
-                />
-              ))}
-            </svg>
-          </div>
-        )
-
-      default:
-        return null
-    }
+    return (
+      <SlideElement
+        key={`${element.id}-${slideKey}`}
+        element={element}
+        interactive
+        className={animClass}
+        style={animStyle}
+      />
+    )
   }
 
     // Snake-layout default positions. User drags persist via `frame.layout`
@@ -966,18 +529,8 @@ const PresentationPage = () => {
     const interFrameConnectors = useMemo(() => buildInterFrameConnectors(frameMapLayout), [frameMapLayout])
 
     // ─── Camera animation: Van Wijk smooth zoom-pan ──────────────────────
-    // "Smooth and Efficient Zooming and Panning" — Van Wijk & Nuij, 2003.
-    // The camera follows a hyperbolic arc through (pan, log-zoom) space at
-    // constant perceived velocity, so distant jumps automatically pull back
-    // in the middle and close jumps stay shallow. This is the Prezi feel.
-    // rho=1.6 → cinematic mid-air pull-back; baseDuration=1600ms is the
-    // duration for an "average" jump (auto-scaled by path length).
-    const VAN_WIJK_RHO = 1.6
-    const VAN_WIJK_RHO_SQ = VAN_WIJK_RHO * VAN_WIJK_RHO
-    // navSpeedMs from the editor slider is the full-path duration for a "standard" jump.
-    // We scale it down slightly for the base so very long paths don't feel sluggish.
-    const VAN_WIJK_BASE_DURATION = navSpeedMs * 0.7
-
+    // Shared with the video export (utils/presentationCamera) so a
+    // downloaded video moves exactly like the slideshow.
     const cameraAnimRef = useRef({ raf: null, token: 0 })
 
     const cancelCameraAnim = useCallback(() => {
@@ -988,125 +541,45 @@ const PresentationPage = () => {
       cameraAnimRef.current.token += 1
     }, [])
 
-    // Build a Van Wijk path from (u0, w0) to (u1, w1) where u = world-space
-    // pan vector and w = world-units visible across the viewport width.
-    // Returns: { S: total path length, w(s), u(s) } evaluated at 0 ≤ s ≤ S.
-    const buildVanWijkPath = (u0, u1, w0, w1) => {
-      const ux = u1[0] - u0[0]
-      const uy = u1[1] - u0[1]
-      const u_dist = Math.hypot(ux, uy)
-
-      // Same pan position → zoom-in-place. Skip the heavy math, use log lerp.
-      if (u_dist < 1e-6) {
-        const S = Math.abs(Math.log(w1 / w0)) / VAN_WIJK_RHO
-        return {
-          S: Math.max(S, 1e-6),
-          w: (s) => w0 * Math.exp(VAN_WIJK_RHO * s * Math.sign(Math.log(w1 / w0))),
-          u: () => [u0[0], u0[1]],
-        }
-      }
-
-      const b0 = (w1 * w1 - w0 * w0 + VAN_WIJK_RHO_SQ * VAN_WIJK_RHO_SQ * u_dist * u_dist) / (2 * w0 * VAN_WIJK_RHO_SQ * u_dist)
-      const b1 = (w1 * w1 - w0 * w0 - VAN_WIJK_RHO_SQ * VAN_WIJK_RHO_SQ * u_dist * u_dist) / (2 * w1 * VAN_WIJK_RHO_SQ * u_dist)
-      const r0 = Math.log(-b0 + Math.sqrt(b0 * b0 + 1))
-      const r1 = Math.log(-b1 + Math.sqrt(b1 * b1 + 1))
-      const S = (r1 - r0) / VAN_WIJK_RHO
-
-      const w = (s) => w0 * (Math.cosh(r0) / Math.cosh(VAN_WIJK_RHO * s + r0))
-      const u = (s) => {
-        const tanhTerm = w0 / VAN_WIJK_RHO_SQ * Math.cosh(r0) * Math.tanh(VAN_WIJK_RHO * s + r0) - w0 / VAN_WIJK_RHO_SQ * Math.sinh(r0)
-        const frac = tanhTerm / u_dist
-        return [u0[0] + frac * ux, u0[1] + frac * uy]
-      }
-
-      return { S: Math.max(Math.abs(S), 1e-6), w, u }
-    }
-
-    // Animate camera from current pose to (targetWorldCenter, targetWidth)
-    // via the Van Wijk path. Drives setCamera each frame via rAF — no CSS
-    // transition involved, so the world container's `transition` style
-    // must be removed (see Edit 2).
-    const animateCameraVanWijk = useCallback((targetWorldCenter, targetWidth) => {
+    // Animate from the current pose to `target` (a { center, width } view).
+    // Writes the transform straight to the DOM each frame (no CSS transition).
+    const animateCameraVanWijk = useCallback((target) => {
       cancelCameraAnim()
       const myToken = cameraAnimRef.current.token + 1
       cameraAnimRef.current.token = myToken
 
-      const viewportW = window.innerWidth
-      const viewportH = window.innerHeight
-
-      // Convert current camera into (u0, w0) world-coord form.
-      const startZoom = camera.zoom
-      const startPanX = camera.panX
-      const startPanY = camera.panY
-      const originX = worldBounds.width / 2
-      const originY = worldBounds.height / 2
-      const startCenterX = originX + (viewportW / 2 - originX) / startZoom - startPanX
-      const startCenterY = originY + (viewportH / 2 - originY) / startZoom - startPanY
-      const w0 = viewportW / startZoom
-      const w1 = targetWidth
-
-      const u0 = [startCenterX, startCenterY]
-      const u1 = [targetWorldCenter[0], targetWorldCenter[1]]
-
-      const path = buildVanWijkPath(u0, u1, w0, w1)
-      // Auto-scale duration by path length so near jumps finish faster.
-      // (path.S is roughly 1-3 for typical jumps; ÷2 keeps base meaningful.)
-      const totalDuration = Math.max(300, VAN_WIJK_BASE_DURATION * (path.S / 2))
-
+      const vpW = window.innerWidth
+      const vpH = window.innerHeight
+      const world = { width: worldBounds.width, height: worldBounds.height }
+      const tween = viewTween(viewFromCamera(cameraLiveRef.current, vpW, vpH, world), target)
+      // #07 — every transition takes the "Slide Transition Speed" set in the
+      // editor, whatever the distance between the slides
+      const totalDuration = navSpeedMs
       const startTime = performance.now()
 
       const tick = (now) => {
         if (cameraAnimRef.current.token !== myToken) return
-
-        const elapsed = now - startTime
-        const t = Math.min(1, elapsed / totalDuration)
-        // Gentle quadratic ease — Van Wijk gives constant perceived velocity,
-        // but humans want a little wind-up and wind-down.
-        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
-        const s = eased * path.S
-
-        const widthAtS = path.w(s)
-        const centerAtS = path.u(s)
-        const zoomAtS = viewportW / widthAtS
-
-        const panX = originX + (viewportW / 2 - originX) / zoomAtS - centerAtS[0]
-        const panY = originY + (viewportH / 2 - originY) / zoomAtS - centerAtS[1]
-
-        setCamera({ zoom: zoomAtS, panX, panY })
-
-        if (t < 1) {
-          cameraAnimRef.current.raf = requestAnimationFrame(tick)
-        } else {
-          cameraAnimRef.current.raf = null
-        }
+        const t = Math.min(1, (now - startTime) / totalDuration)
+        applyCamera(cameraFromView(tween(t), vpW, vpH, world), t >= 1)
+        cameraAnimRef.current.raf = t < 1 ? requestAnimationFrame(tick) : null
       }
-
       cameraAnimRef.current.raf = requestAnimationFrame(tick)
-    }, [camera.zoom, camera.panX, camera.panY, worldBounds.width, worldBounds.height, cancelCameraAnim])
+    }, [worldBounds.width, worldBounds.height, cancelCameraAnim, navSpeedMs])
 
     // Cancel any in-flight camera animation on unmount.
     useEffect(() => {
       return () => cancelCameraAnim()
     }, [cancelCameraAnim])
 
-    const updateCameraToBox = useCallback((box, zoomScale = 0.8) => {
+    const updateCameraToBox = useCallback((box, zoomScale = SLIDE_FIT) => {
       if (!window.innerWidth || !box) return
-      const viewportW = window.innerWidth
-      const viewportH = window.innerHeight
-      const targetZoom = Math.max(0.1, Math.min(40, Math.min((viewportW / box.width) * zoomScale, (viewportH / box.height) * zoomScale)))
-
-      const worldCenterX = box.x + box.width / 2
-      const worldCenterY = box.y + box.height / 2
-      // targetWidth = world units visible on screen at the target zoom.
-      const targetWidth = viewportW / targetZoom
-
-      animateCameraVanWijk([worldCenterX, worldCenterY], targetWidth)
+      animateCameraVanWijk(viewForBox(box, window.innerWidth, window.innerHeight, zoomScale))
     }, [animateCameraVanWijk])
 
   const focusOverview = useCallback(() => {
     const width = Math.max(1, worldBounds.maxX - worldBounds.minX)
     const height = Math.max(1, worldBounds.maxY - worldBounds.minY)
-    updateCameraToBox({ x: worldBounds.minX, y: worldBounds.minY, width, height }, 0.85)
+    updateCameraToBox({ x: worldBounds.minX, y: worldBounds.minY, width, height }, OVERVIEW_FIT)
   }, [worldBounds.maxX, worldBounds.maxY, worldBounds.minX, worldBounds.minY, updateCameraToBox])
 
  const focusSlide = useCallback((index) => {
@@ -1124,7 +597,7 @@ const PresentationPage = () => {
           y: target.y,
           width: target.width,
           height: target.height,
-        }, 0.9)
+        }, SLIDE_FIT)
       }
     }
   }, [frameMapLayout, focusOverview, updateCameraToBox])
@@ -1169,6 +642,15 @@ const PresentationPage = () => {
     return frames[currentSlideIndex]?.id ?? null
   }, [hasStarted, currentSlideIndex, frames])
 
+  const eraserLastRef = useRef(null)
+  const eraseAtPoint = (at) => {
+    setAnnotations((prev) => {
+      const slideStrokes = prev[currentSlideKey] || []
+      const next = eraseStrokes(slideStrokes, at)
+      return next === slideStrokes ? prev : { ...prev, [currentSlideKey]: next }
+    })
+  }
+
   const handleAnnotationPointerDown = (e) => {
     if (!hasStarted || !activeTool || currentSlideKey == null) return
     if (activeTool === 'laser') return // laser doesn't draw
@@ -1177,20 +659,8 @@ const PresentationPage = () => {
     if (!local) return
 
     if (activeTool === 'eraser') {
-      // Object eraser: remove any stroke whose path passes near this point.
-      const HIT_RADIUS_NORM = 0.015 // ~1.5% of slide width
-      setAnnotations((prev) => {
-        const slideStrokes = prev[currentSlideKey] || []
-        const kept = slideStrokes.filter((stroke) => {
-          return !stroke.points.some((p) => {
-            const dx = p.x - local.x
-            const dy = p.y - local.y
-            return Math.hypot(dx, dy) < HIT_RADIUS_NORM
-          })
-        })
-        if (kept.length === slideStrokes.length) return prev
-        return { ...prev, [currentSlideKey]: kept }
-      })
+      eraserLastRef.current = local
+      eraseAtPoint(local)
       return
     }
 
@@ -1228,19 +698,11 @@ const PresentationPage = () => {
     if (activeTool === 'eraser' && e.buttons === 1 && hasStarted && currentSlideKey != null) {
       const local = slideElementToLocal(e.clientX, e.clientY)
       if (!local) return
-      const HIT_RADIUS_NORM = 0.015
-      setAnnotations((prev) => {
-        const slideStrokes = prev[currentSlideKey] || []
-        const kept = slideStrokes.filter((stroke) => {
-          return !stroke.points.some((p) => {
-            const dx = p.x - local.x
-            const dy = p.y - local.y
-            return Math.hypot(dx, dy) < HIT_RADIUS_NORM
-          })
-        })
-        if (kept.length === slideStrokes.length) return prev
-        return { ...prev, [currentSlideKey]: kept }
-      })
+      // erase along the path of the pointer, not only where events land
+      const prev = eraserLastRef.current || local
+      const steps = Math.max(1, Math.ceil(eraseDist(prev, local) / (ERASER_RADIUS / 2)))
+      for (let k = 1; k <= steps; k++) eraseAtPoint({ x: prev.x + ((local.x - prev.x) * k) / steps, y: prev.y + ((local.y - prev.y) * k) / steps })
+      eraserLastRef.current = local
     }
   }
 
@@ -1451,20 +913,36 @@ const PresentationPage = () => {
       document.exitFullscreen().catch(() => {})
     }
     commitAnnotations()
-    navigate('/editor')
+    // Back to the same project, in overview (the editor keeps the state,
+    // including any ink kept from this presentation, and saves it)
+    navigate(returnTo, { state: { fromPresentation: true } })
   }
 
+  // Closing a running slideshow goes back to the presentation's overview
+  // (the start screen); closing that screen goes back to the editor.
+  const endSlideShow = () => {
+    setActiveTool(null)
+    setLaserPos(null)
+    setHasStarted(false)
+    setCurrentSlideIndex(0)
+  }
+  const closePresentation = () => (hasStarted ? endSlideShow() : exitPresentation())
+
+  // #55 — the overview is part of the slideshow (Prezi path): Previous on the
+  // first slide and Next on the last slide show the overview instead of
+  // stopping; from the overview Next starts again at slide 1.
   const goToPrev = () => {
-    setCurrentSlideIndex(prev => Math.max(0, prev - 1))
+    setCurrentSlideIndex(prev => (prev <= 0 ? -1 : prev - 1))
   }
   const goToNext = () => {
-    setCurrentSlideIndex(prev => Math.min(frames.length - 1, prev + 1))
+    setCurrentSlideIndex(prev => (prev === -1 ? 0 : prev >= frames.length - 1 ? -1 : prev + 1))
   }
+  const showOverviewInShow = () => setCurrentSlideIndex(-1)
 
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
-        exitPresentation()
+        closePresentation()
         return
       }
 
@@ -1541,6 +1019,9 @@ const PresentationPage = () => {
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'Backspace' || e.key === 'PageUp' || e.key === 'p' || e.key === 'P') {
         e.preventDefault()
         goToPrev()
+      } else if (e.key === 'o' || e.key === 'O' || e.key === 'g' || e.key === 'G') {
+        e.preventDefault()
+        showOverviewInShow()
       } else if (e.key === 'Home') {
         e.preventDefault()
         setCurrentSlideIndex(0)
@@ -1560,6 +1041,15 @@ const PresentationPage = () => {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [frames.length, hasStarted, currentSlideKey, undo, redo])
 
+  if (isLoadingProject) {
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-gray-900 text-white">
+        <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin mb-3" />
+        <p className="text-sm text-white/70">Opening presentation…</p>
+      </div>
+    )
+  }
+
   return (
     <div
         className="fixed inset-0 flex items-center justify-center overflow-hidden"
@@ -1576,15 +1066,16 @@ const PresentationPage = () => {
       ref={containerRef}
     >
      <div
+        ref={worldRef}
         className="absolute left-0 top-0"
         style={{
           width: `${worldBounds.width}px`,
           height: `${worldBounds.height}px`,
-          transform: `scale(${camera.zoom}) translate(${camera.panX}px, ${camera.panY}px)`,
+          transform: `scale(${cameraLiveRef.current.zoom}) translate(${cameraLiveRef.current.panX}px, ${cameraLiveRef.current.panY}px)`,
           transformOrigin: 'center center',
           // Camera is driven directly by animateCameraVanWijk's rAF loop —
           // no CSS transition or the JS animation would fight it.
-          willChange: 'transform',
+          // will-change is set only while it moves (see applyCamera, #34)
         }}
       >
        {frameMapLayout.map((frameBox, frameIdx) => {
@@ -1606,7 +1097,7 @@ const PresentationPage = () => {
           const visualRadius = 12 * invZoom
           const visualRing = isActive ? 3 * invZoom : 0
           // Scale 1280×720 logical content down to fit the frame's layout box.
-          const contentScale = frameBox.width / 1280
+          const contentScale = Math.min(frameBox.width / SLIDE_WIDTH, frameBox.height / SLIDE_HEIGHT)
           // Presentation UX: once the user has started the presentation and a
           // specific slide is focused, hide the other (non-active) slides so
           // the viewer sees ONLY the current slide and isn't distracted by
@@ -1627,11 +1118,7 @@ const PresentationPage = () => {
                 width: renderW,
                 height: renderH,
                 zIndex: isActive ? 1000 : (sizeRank * 10 + 1),
-                background: frameData?.backgroundImage
-                  ? `url("${frameData.backgroundImage}") center/cover no-repeat`
-                  : ((frameData?.backgroundColor && frameData.backgroundColor !== 'transparent')
-                    ? frameData.backgroundColor
-                    : (frameData?.bg && frameData.bg !== 'transparent' ? frameData.bg : 'white')),
+                ...getFrameBackgroundStyle(frameData, { editorBackground }),
                 borderRadius: `${visualRadius}px`,
                 boxShadow: isActive
                   ? `0 0 0 ${visualRing}px #2E7D32, 0 10px 30px rgba(0,0,0,0.25)`
@@ -1643,9 +1130,11 @@ const PresentationPage = () => {
                   setCurrentSlideIndex(frameIdx)
               }}
             >
-              <div 
-                className="relative w-full h-full"
+              <div
+                className="relative"
                 style={{
+                  width: SLIDE_WIDTH,
+                  height: SLIDE_HEIGHT,
                   transform: `scale(${contentScale})`,
                   transformOrigin: 'top left',
                 }}
@@ -1746,10 +1235,19 @@ const PresentationPage = () => {
 
           {hasStarted && (
             <>
+              {/* Overview (stays in the slideshow) */}
+              <button
+                onClick={showOverviewInShow}
+                className={`p-2 rounded-full transition-colors ${currentSlideIndex === -1 ? 'bg-white/25 text-white' : 'text-white hover:bg-white/20'}`}
+                title="Overview (O)"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+              </button>
+
               {/* Prev */}
               <button
                 onClick={goToPrev}
-                disabled={currentSlideIndex === 0}
+                disabled={currentSlideIndex === -1}
                 className="p-2 text-white hover:bg-white/20 rounded-full transition-colors disabled:opacity-40"
                 title="Previous slide"
               >
@@ -1760,7 +1258,7 @@ const PresentationPage = () => {
 
               {/* Slide counter */}
               <div className="text-gray-200 font-medium text-xs py-1 select-none">
-                {currentSlideIndex + 1}
+                {currentSlideIndex === -1 ? 'All' : currentSlideIndex + 1}
                 <span className="text-gray-400 mx-0.5">/</span>
                 {frames.length}
               </div>
@@ -1768,7 +1266,6 @@ const PresentationPage = () => {
               {/* Next */}
               <button
                 onClick={goToNext}
-                disabled={currentSlideIndex === frames.length - 1}
                 className="p-2 text-white hover:bg-white/20 rounded-full transition-colors disabled:opacity-40"
                 title="Next slide"
               >
@@ -1842,7 +1339,7 @@ const PresentationPage = () => {
               <button
                 onClick={() => setActiveTool(activeTool === 'eraser' ? null : 'eraser')}
                 className={`p-2 rounded-full transition-colors ${activeTool === 'eraser' ? 'bg-white/25 text-white' : 'text-white hover:bg-white/20'}`}
-                title="Eraser (click stroke to remove)"
+                title="Eraser (drag over ink to erase part of it)"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 17l6 6 12-12-6-6L3 17z" />
@@ -1871,9 +1368,9 @@ const PresentationPage = () => {
 
           {/* Exit */}
           <button
-            onClick={exitPresentation}
+            onClick={closePresentation}
             className="p-2 text-red-400 hover:bg-red-400/20 rounded-full transition-colors"
-            title="Exit presentation"
+            title={hasStarted ? 'End slideshow (Esc)' : 'Back to the editor (Esc)'}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M18 6L6 18M6 6l12 12" />

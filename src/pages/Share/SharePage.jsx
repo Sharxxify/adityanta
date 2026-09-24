@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
-import { buildSlideRenderNode, SLIDE_HEIGHT, SLIDE_WIDTH } from '../../utils/slideRender'
+import SlideView from '../../components/Slide/SlideView'
+import { normalizeFrames } from '../../components/Slide/model'
 import { decodeSharePayload } from '../../utils/shareUtils'
+import { framesForExport } from '../../utils/exportFrames'
 import { useEditor } from '../../context/EditorContext'
+import { useApp } from '../../context/AppContext'
 import logo from '../../assets/logo.png'
 import logger from '../../utils/logger'
 
@@ -22,34 +25,39 @@ const getHashSharePayload = () => {
   return hashParams.get('data') || null
 }
 
+// Scales the shared renderer to the available width
+const SharedSlide = ({ frame, header, editorBackground }) => {
+  const ref = useRef(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return undefined
+    const update = () => setWidth(el.getBoundingClientRect().width)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  return (
+    <div ref={ref} className="w-full h-full bg-white rounded-xl shadow-2xl overflow-hidden">
+      {frame && width > 0 && (
+        <SlideView frame={frame} width={width} header={header} editorBackground={editorBackground} mode="export" />
+      )}
+    </div>
+  )
+}
+
 const SharePage = () => {
   const { shareId } = useParams()
   const navigate = useNavigate()
-  const { loadTemplate } = useEditor()
-  const slideViewportRef = useRef(null)
+  const { loadTemplate, setEditorBackground } = useEditor()
+  const { saveProject } = useApp()
   const [presentation, setPresentation] = useState(null)
   const [currentSlide, setCurrentSlide] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [viewportSize, setViewportSize] = useState({ width: SLIDE_WIDTH, height: SLIDE_HEIGHT })
-
-  useEffect(() => {
-    const node = slideViewportRef.current
-    if (!node) return undefined
-
-    const updateSize = () => {
-      setViewportSize({
-        width: Math.max(320, node.clientWidth || SLIDE_WIDTH),
-        height: Math.max(180, node.clientHeight || SLIDE_HEIGHT)
-      })
-    }
-
-    updateSize()
-    const observer = new ResizeObserver(updateSize)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [])
-
+  // Viewed like a download: the project header is an opening title slide
+  const viewFrames = useMemo(() => framesForExport(presentation?.frames || [], presentation?.header), [presentation])
   useEffect(() => {
     let cancelled = false
 
@@ -57,7 +65,8 @@ const SharePage = () => {
       try {
         const encodedPayload = getHashSharePayload()
         if (encodedPayload) {
-          const decoded = await decodeSharePayload(encodedPayload)
+          const raw = await decodeSharePayload(encodedPayload)
+          const decoded = { ...raw, frames: normalizeFrames(raw?.frames) }
           if (!cancelled) {
             setPresentation(decoded)
             const shares = safeGetItem(SHARE_STORAGE_KEY, {})
@@ -70,7 +79,7 @@ const SharePage = () => {
         } else {
           const localData = getSharedPresentation(shareId)
           if (localData && !cancelled) {
-            setPresentation(localData)
+            setPresentation({ ...localData, frames: normalizeFrames(localData.frames) })
           } else if (!cancelled) {
             setError('Presentation not found or this link was created on another device without embedded data.')
           }
@@ -87,47 +96,29 @@ const SharePage = () => {
     return () => { cancelled = true }
   }, [shareId])
 
-  useEffect(() => {
-    const mountNode = slideViewportRef.current
-    const frame = presentation?.frames?.[currentSlide]
-    if (!mountNode || !frame) return undefined
-
-    mountNode.innerHTML = ''
-    const slideNode = buildSlideRenderNode(frame, viewportSize)
-    mountNode.appendChild(slideNode)
-    return () => {
-      mountNode.innerHTML = ''
-    }
-  }, [presentation, currentSlide, viewportSize])
-
   const handleOpenInEditor = async () => {
     if (!presentation) return
     try {
-      const { saveProject } = await import('../../utils/indexedDBHelper')
-      const newProjectId = `shared_${Date.now()}`
-      const newProject = {
-        id: newProjectId,
+      const saved = await saveProject({
+        id: `shared_${Date.now()}`,
         title: `${presentation.title || 'Shared Project'} - Copy`,
+        header: presentation.header,
         frames: presentation.frames || [],
+        ...(presentation.editorBackground !== undefined ? { editorBgImage: presentation.editorBackground } : {}),
         isUserUpload: true,
-        uploadedAt: new Date().toISOString()
-      }
-      const success = saveProject(newProject)
-      if (success) {
-        navigate(`/editor/${newProjectId}`)
-      } else {
-        setError('Failed to create a local copy to edit.')
-      }
+        uploadedAt: new Date().toISOString(),
+      })
+      navigate(`/editor/${saved.id}`)
     } catch (err) {
       logger.error('Failed to copy project for editing:', err)
-      setError('Could not prepare project for editing.')
+      setError(err?.message || 'Could not prepare project for editing.')
     }
   }
 
   // Keyboard navigation
   useEffect(() => {
     if (!presentation) return
-    const total = presentation.frames?.length || 0
+    const total = viewFrames.length
     const handler = (e) => {
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
         e.preventDefault()
@@ -143,12 +134,13 @@ const SharePage = () => {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [presentation])
+  }, [presentation, viewFrames.length])
 
   const handlePresent = () => {
     if (!presentation) return
     // Load shared frames into EditorContext directly — avoids overwriting the owner's autosave
-    loadTemplate({ title: presentation.title, frames: presentation.frames })
+    loadTemplate({ title: presentation.title, frames: presentation.frames, header: presentation.header })
+    setEditorBackground(presentation.editorBackground ?? null)
     navigate('/present')
   }
 
@@ -193,7 +185,7 @@ const SharePage = () => {
           <img src={logo} alt="Adityanta" className="h-8" />
           <div className="min-w-0">
             <h1 className="font-semibold text-gray-900 truncate">{presentation?.title || 'Shared Presentation'}</h1>
-            <p className="text-xs text-gray-500">{presentation?.frames?.length || 0} slides</p>
+            <p className="text-xs text-gray-500">{viewFrames.length} slides</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -221,7 +213,11 @@ const SharePage = () => {
 
       <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
         <div className="w-full max-w-6xl aspect-video">
-          <div ref={slideViewportRef} className="w-full h-full bg-white rounded-xl shadow-2xl overflow-hidden" />
+          <SharedSlide
+            frame={viewFrames[currentSlide]}
+            header={null}
+            editorBackground={presentation?.editorBackground}
+          />
         </div>
       </div>
 
@@ -239,7 +235,7 @@ const SharePage = () => {
           </button>
 
           <div className="flex items-center gap-2">
-            {presentation?.frames?.map((_, index) => (
+            {viewFrames.map((_, index) => (
               <button
                 key={index}
                 onClick={() => setCurrentSlide(index)}
@@ -249,8 +245,8 @@ const SharePage = () => {
           </div>
 
           <button
-            onClick={() => setCurrentSlide(Math.min((presentation?.frames?.length || 1) - 1, currentSlide + 1))}
-            disabled={currentSlide === (presentation?.frames?.length || 1) - 1}
+            onClick={() => setCurrentSlide(Math.min(Math.max(1, viewFrames.length) - 1, currentSlide + 1))}
+            disabled={currentSlide === Math.max(1, viewFrames.length) - 1}
             aria-label="Next slide"
             className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -260,7 +256,7 @@ const SharePage = () => {
           </button>
 
           <span className="text-sm text-gray-500 ml-4">
-            {currentSlide + 1} / {presentation?.frames?.length || 0}
+            {currentSlide + 1} / {viewFrames.length}
           </span>
         </div>
       </div>

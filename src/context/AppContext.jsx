@@ -4,7 +4,7 @@ import { API_CONFIG, AUTH_CONFIG } from '../config'
 import { fetchWithRateLimit } from '../services/api'
 import { safeJSONParse, setToStorage } from '../utils/imageUtils'
 import { safeSetItem, safeGetItem } from '../utils/safeStorage'
-import { saveItem as idbSaveItem, loadItem as idbLoadItem, requestPersistentStorage } from '../utils/indexedDBHelper'
+import * as projectStore from '../utils/projectStore'
 import logger from '../utils/logger'
 
 const AppContext = createContext(null)
@@ -24,9 +24,7 @@ export const AppProvider = ({ children }) => {
     const stored = safeGetItem(FAVORITES_KEY, [])
     return Array.isArray(stored) ? stored : []
   })
-  const [userFiles, setUserFiles] = useState([])
   const [isUserFilesLoaded, setIsUserFilesLoaded] = useState(false)
-  const [trashedItems, setTrashedItems] = useState([])
  const [templates, setTemplates] = useState([])
   const [storeTemplates, setStoreTemplates] = useState([])
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
@@ -123,38 +121,43 @@ export const AppProvider = ({ children }) => {
     fetchConfig()
   }, [fetchConfig])
 
-  // Normalize template data from API to match frontend format
+  // Template data from the API, kept exactly as the server sends it (#47).
+  // Only field-name aliases (camelCase / snake_case) are resolved and the
+  // card gradient is added; nothing is invented. (The old code clamped every
+  // slide count to 4–5, and made up titles, topics, descriptions, licences
+  // and "created today" dates when a field was missing.)
   const normalizeTemplate = useCallback((template, index) => {
-    // Normalize frames count safely
-    const count = parseInt(template.frames, 10)
-    const normalizedFrames = isNaN(count)
-      ? 5
-      : Math.max(4, Math.min(count, 5))
-    const rawPreview = `${template.preview || ''}`.trim()
+    const t = template || {}
+    const frameCount = (() => {
+      const raw = t.frames ?? t.frame_count ?? t.slide_count ?? t.slides_count ?? t.slides
+      if (Array.isArray(raw)) return raw.length
+      const n = parseInt(raw, 10)
+      return Number.isFinite(n) && n >= 0 ? n : null
+    })()
+    const rawPreview = `${t.preview || ''}`.trim()
     const isUrlLikePreview = /^(https?:\/\/|www\.)/i.test(rawPreview)
-    const normalizedPreview = (!rawPreview || isUrlLikePreview)
-      ? (template.title?.split(' ').slice(0, 2).join(' ').toUpperCase() || 'TEMPLATE')
-      : rawPreview
-    const normalizedPreviewImage = rawPreview
+    const previewImage = isUrlLikePreview
       ? (/^www\./i.test(rawPreview) ? `https://${rawPreview}` : rawPreview.replace(/^http:\/\//i, 'https://'))
-      : ''
+      : null
+    const downloads = parseInt(t.downloads ?? t.download_count, 10)
 
     return {
-      ...template,
-      id: template.id || template.template_id || template.templateId || index + 1,
-      template_id: template.template_id || template.templateId || template.id,
-      title: template.title || 'Untitled Template',
-      topic: template.topic || 'General',
-      frames: normalizedFrames,
-      downloads: Math.max(0, parseInt(template.downloads, 10) || 0),
-      license: template.license || 'FREE',
-      gradient: template.gradient || defaultGradients[index % defaultGradients.length],
-      preview: normalizedPreview,
-      thumbnail_url: template.thumbnail_url || template.thumbnailUrl || (isUrlLikePreview ? normalizedPreviewImage : null),
-      description: template.description || `A beautiful ${template.topic || 'educational'} template with slides.`,
-      is_favourite: template.is_favourite || template.isFavourite || false,
-      s3_file_url: template.s3_file_url || template.s3FileUrl || null,
-      created_at: template.created_at || template.createdAt || new Date().toISOString(),
+      ...t,
+      id: t.id ?? t.template_id ?? t.templateId ?? index + 1,
+      template_id: t.template_id ?? t.templateId ?? t.id,
+      title: t.title ?? '',
+      topic: t.topic ?? '',
+      sub_topic: t.sub_topic ?? t.subTopic ?? '',
+      frames: frameCount,
+      downloads: Number.isFinite(downloads) ? Math.max(0, downloads) : 0,
+      license: t.license ?? null,
+      gradient: t.gradient || defaultGradients[index % defaultGradients.length],
+      preview: rawPreview,
+      thumbnail_url: t.thumbnail_url || t.thumbnailUrl || previewImage,
+      description: t.description ?? '',
+      is_favourite: !!(t.is_favourite || t.isFavourite),
+      s3_file_url: t.s3_file_url || t.s3FileUrl || null,
+      created_at: t.created_at || t.createdAt || null,
     }
   }, [])
 
@@ -185,7 +188,7 @@ export const AppProvider = ({ children }) => {
     params.append('store_mode', storeMode)
     if (filters.topic && filters.topic !== 'All') params.append('topic', filters.topic)
     if (filters.license && filters.license !== 'All') params.append('license', filters.license.toUpperCase())
-    if (filters.sort) params.append('sort', filters.sort === 'New → Old' ? 'new' : 'old')
+    if (filters.sort) params.append('sort', /old\s*(to|->|→)\s*new/i.test(filters.sort) ? 'old' : 'new')
     params.append('limit', '50')
 
     const fetchRef = isStore ? storeTemplatesFetchRef : templatesFetchRef
@@ -211,7 +214,10 @@ export const AppProvider = ({ children }) => {
     }
 
     setLoading(true)
-    const requestPromise = (async () => {
+    // Retries run inside this request. (They used to call fetchTemplates()
+    // again, which returned this very in-flight promise: a promise waiting
+    // for itself never settles, so a failed load spun forever.)
+    const run = async (attemptNo) => {
       try {
 
         const url = `${API_CONFIG.baseURL}/templates?${params.toString()}`
@@ -233,7 +239,12 @@ export const AppProvider = ({ children }) => {
 
         console.log(`[Templates:${storeMode}] Response status:`, response.status)
 
-      if (response.status === 401) { localStorage.removeItem('adityanta_token'); localStorage.removeItem('adityanta_google_token'); localStorage.removeItem('user_profile'); if (window.location.pathname !== '/') window.location.href = '/'; throw new Error('Session expired'); }
+      if (response.status === 401) {
+        // the session token lives in auth_token (the old code cleared a key that is never used)
+        ['auth_token', 'adityanta_token', 'adityanta_google_token', 'user_profile'].forEach((k) => localStorage.removeItem(k))
+        if (window.location.pathname !== '/') window.location.href = '/'
+        throw new Error('Session expired')
+      }
         if (!response.ok) {
           console.error(`[Templates:${storeMode}] Response not OK:`, response.status, response.statusText)
           // On any non-OK response, retry without optional params (but keep store_mode — backend requires it)
@@ -285,20 +296,21 @@ export const AppProvider = ({ children }) => {
       } catch (error) {
         console.error(`[Templates:${storeMode}] Fetch error:`, error.message)
         // Auto-retry once after 2 seconds on any error
-        if (retryAttempt < 1) {
+        if (attemptNo < 1) {
           console.log(`[Templates:${storeMode}] Auto-retrying in 2 seconds...`)
           await new Promise(r => setTimeout(r, 2000))
-          return fetchTemplates(filters, retryAttempt + 1)
+          return run(attemptNo + 1)
         }
         setServerStatus('offline')
         return []
-      } finally {
-        setLoading(false)
-        fetchRef.current.inFlight = null
-        fetchRef.current.lastFetchedAt = Date.now()
-        fetchRef.current.lastKey = requestKey
       }
-    })()
+    }
+    const requestPromise = run(retryAttempt).finally(() => {
+      setLoading(false)
+      if (fetchRef.current.inFlight === requestPromise) fetchRef.current.inFlight = null
+      fetchRef.current.lastFetchedAt = Date.now()
+      fetchRef.current.lastKey = requestKey
+    })
 
     fetchRef.current.inFlight = requestPromise
     fetchRef.current.lastKey = requestKey
@@ -514,227 +526,124 @@ export const AppProvider = ({ children }) => {
     safeSetItem(FAVORITES_KEY, Array.isArray(favorites) ? favorites : [])
   }, [favorites])
 
-  // User Projects/Files API — persisted to IndexedDB to avoid the ~5MB
-  // localStorage quota (slide decks with embedded images easily exceed it).
-  // localStorage is still checked once on startup as a fallback for users
-  // whose old data lives there, so nothing is lost during the migration.
-  // Compute unique key for the current user to namespace IndexedDB and trash storage keys
-  const userKey = useMemo(() => {
+  // User projects ("Your Files") live in this browser, one IndexedDB record
+  // per project (see utils/projectStore.js). React state only holds the light
+  // summaries used by the Home page; full projects are loaded on demand.
+  const ownerKey = useMemo(() => {
     if (!user) return 'anonymous'
     return String(user.id || user.user_id || user.phone || user.email || 'anonymous')
   }, [user])
+  const ownerRef = useRef(ownerKey)
+  ownerRef.current = ownerKey
 
-  const USER_FILES_KEY = useMemo(() => `adityanta_user_files_${userKey}`, [userKey])
-  const TRASH_KEY = useMemo(() => `adityanta_trash_${userKey}`, [userKey])
-  const USER_FILES_IDB_KEY = useMemo(() => `adityanta_user_files_${userKey}`, [userKey])
+  const [projectSummaries, setProjectSummaries] = useState([])
 
-  // Track if initial load is complete to avoid overwriting persisted data
-  // with the empty-array initial state before IndexedDB has responded.
-  const initialLoadComplete = useRef(false)
+  const refreshUserFiles = useCallback(async () => {
+    const owner = ownerRef.current
+    try {
+      const list = await projectStore.listProjects(owner)
+      if (ownerRef.current === owner) setProjectSummaries(list)
+      return list
+    } catch (e) {
+      logger.error('AppContext: could not list projects', e)
+      return []
+    }
+  }, [])
 
-  // Load from IndexedDB (preferred) or localStorage (legacy) whenever the active account changes
   useEffect(() => {
     let cancelled = false
-    initialLoadComplete.current = false
-    setIsUserFilesLoaded(false) // Trigger loading spinner during account switches
-
-    const loadUserFiles = async () => {
-      // Request persistent storage so the browser does not erase our database on cache clears
+    setIsUserFilesLoaded(false)
+    ;(async () => {
+      projectStore.requestPersistence().catch(() => {})
       try {
-        await requestPersistentStorage()
+        await projectStore.migrateLegacyProjects(ownerKey)
       } catch (e) {
-        logger.error('AppContext: Persistent storage request failed:', e)
+        logger.error('AppContext: migrating older projects failed (they are left untouched)', e)
       }
-
-      // 1. Try IndexedDB first — this is the authoritative store going forward.
-      let files = null
-      try {
-        const fromIDB = await idbLoadItem(USER_FILES_IDB_KEY)
-        if (Array.isArray(fromIDB)) files = fromIDB
-      } catch (e) {
-        logger.error('AppContext: IndexedDB load failed:', e)
-      }
-
-      // 2. Fallback to localStorage (legacy users from before the migration).
-      //    If we find data there AND IndexedDB was empty, migrate it forward.
-      if (!files) {
-        // Try user-specific localStorage first
-        const fromLS = safeGetItem(USER_FILES_KEY, null)
-        if (Array.isArray(fromLS) && fromLS.length > 0) {
-          files = fromLS
-          try {
-            await idbSaveItem(USER_FILES_IDB_KEY, fromLS)
-            logger.info(`AppContext: Migrated userFiles from localStorage key ${USER_FILES_KEY} to IndexedDB`)
-          } catch (e) {
-            logger.error('AppContext: Migration write to IndexedDB failed:', e)
-          }
-        } else {
-          // Try global legacy localStorage key
-          const fromGlobalLS = safeGetItem('adityanta_user_files', null)
-          if (Array.isArray(fromGlobalLS) && fromGlobalLS.length > 0) {
-            files = fromGlobalLS
-            try {
-              await idbSaveItem(USER_FILES_IDB_KEY, fromGlobalLS)
-              logger.info(`AppContext: Migrated legacy global userFiles to IndexedDB key ${USER_FILES_IDB_KEY}`)
-              // Clean up global legacy localStorage so it doesn't cause mix-ups
-              localStorage.removeItem('adityanta_user_files')
-            } catch (e) {
-              logger.error('AppContext: Migration write to IndexedDB failed:', e)
-            }
-          } else {
-            files = []
-          }
-        }
-      }
-
+      try { await projectStore.purgeExpiredTrash(ownerKey) } catch (_e) { /* noop */ }
       if (cancelled) return
-      logger.info(`AppContext: Loaded user files for key ${USER_FILES_IDB_KEY}:`, files.length)
-      setUserFiles(files)
+      await refreshUserFiles()
+      if (!cancelled) setIsUserFilesLoaded(true)
+    })()
+    const off = projectStore.onProjectsChanged(() => { refreshUserFiles() })
+    return () => { cancelled = true; off() }
+  }, [ownerKey, refreshUserFiles])
 
-      // CRITICAL: only flip these flags AFTER the async load has populated
-      // `userFiles`. If we flipped them before, the persist-on-change effect
-      // below would see the empty initial state (`[]`) combined with
-      // `initialLoadComplete === true` and would overwrite the user's saved
-      // files in IndexedDB with `[]` — wiping their work on every refresh.
-      initialLoadComplete.current = true
-      setIsUserFilesLoaded(true)
-    }
+  const userFiles = useMemo(() => projectSummaries.filter((m) => !m.deletedAt), [projectSummaries])
+  const trashedItems = useMemo(() => projectSummaries.filter((m) => m.deletedAt), [projectSummaries])
 
-    loadUserFiles()
-
-    const savedTrash = safeGetItem(TRASH_KEY, [])
-    if (Array.isArray(savedTrash)) {
-      // Convert deletedAt strings back to Date and filter out expired items
-      const now = new Date()
-      const validTrash = savedTrash
-        .map(item => ({ ...item, deletedAt: new Date(item.deletedAt) }))
-        .filter(item => {
-          const daysSinceDelete = (now - item.deletedAt) / (1000 * 60 * 60 * 24)
-          return daysSinceDelete < 15 // Keep items less than 15 days old
-        })
-      setTrashedItems(validTrash)
-      // Update localStorage with cleaned trash
-      setToStorage(TRASH_KEY, validTrash)
-    } else {
-      setTrashedItems([])
-    }
-
-    return () => { cancelled = true }
-  }, [USER_FILES_IDB_KEY, TRASH_KEY, USER_FILES_KEY])
-
-  // Save to IndexedDB whenever userFiles changes (including empty array).
-  // We no longer write userFiles to localStorage — IndexedDB has a much
-  // larger quota (~50MB+ in most browsers, and 50%+ of free disk in Chrome).
-  useEffect(() => {
-    if (initialLoadComplete.current && isUserFilesLoaded) {
-      logger.info(`AppContext: Persisting userFiles to IndexedDB for key ${USER_FILES_IDB_KEY}:`, userFiles.length, 'files')
-      idbSaveItem(USER_FILES_IDB_KEY, userFiles).catch((e) => {
-        logger.error('AppContext: IndexedDB save failed:', e)
-      })
-    }
-  }, [userFiles, USER_FILES_IDB_KEY, isUserFilesLoaded])
-
- 
-
-  // Save to localStorage whenever trashedItems changes
-  useEffect(() => {
-    if (initialLoadComplete.current) {
-      setToStorage(TRASH_KEY, trashedItems)
-    }
-  }, [trashedItems, TRASH_KEY])
-
-  // Auto-cleanup expired trash items every minute
-  useEffect(() => {
-    const cleanupInterval = setInterval(() => {
-      const now = new Date()
-      setTrashedItems(prev => {
-        const validItems = prev.filter(item => {
-          const deletedAt = item.deletedAt instanceof Date ? item.deletedAt : new Date(item.deletedAt)
-          const daysSinceDelete = (now - deletedAt) / (1000 * 60 * 60 * 24)
-          return daysSinceDelete < 15
-        })
-        return validItems
-      })
-    }, 60000) // Check every minute
-    return () => clearInterval(cleanupInterval)
+  const upsertSummary = useCallback((summary) => {
+    if (!summary) return
+    setProjectSummaries((prev) => {
+      const rest = prev.filter((m) => String(m.id) !== String(summary.id))
+      return [summary, ...rest].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    })
   }, [])
 
-// Save project (create new or update existing)
-  const saveProject = useCallback((projectData) => {
-    const existingIndex = userFiles.findIndex(f => f.id === projectData.id)
-    const now = new Date()
-    const fileData = {
-      ...projectData,
-      id: projectData.id || Date.now(),
-      // Save full frames data, and frameCount for display
-      frames: projectData.frames, // Keep the full frames array
-      frameCount: Array.isArray(projectData.frames) ? projectData.frames.length : (projectData.frames || 1),
-      thumbnail: projectData.thumbnail || 'from-blue-400 to-purple-600',
-      updatedAt: now.toISOString(),
-      created: projectData.created || now.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+  /**
+   * Create or update a project (full data: frames, header, ...).
+   * Resolves with the saved summary; rejects with a readable error.
+   */
+  const saveProject = useCallback(async (projectData) => {
+    try {
+      const summary = await projectStore.saveProjectRecord(ownerRef.current, projectData)
+      upsertSummary(summary)
+      projectStore.notifyProjectsChanged({ id: summary.id })
+      return summary
+    } catch (e) {
+      const err = new Error(projectStore.describeStorageError(e))
+      err.cause = e
+      logger.error('saveProject failed:', e)
+      throw err
     }
+  }, [upsertSummary])
 
-    // Compute the next list synchronously so we can start persistence immediately.
-    const nextFiles = existingIndex >= 0
-      ? userFiles.map((f, i) => i === existingIndex ? fileData : f)
-      : [fileData, ...userFiles]
+  const updateProjectSummary = useCallback(async (id, patch) => {
+    const next = await projectStore.updateProjectSummary(id, patch)
+    if (next) upsertSummary(next)
+    return next
+  }, [upsertSummary])
 
-    // Kick off the IndexedDB write RIGHT NOW (don't wait for the useEffect
-    // that watches `userFiles`). The editor page typically navigates away
-    // immediately after saving, and we want the write to be in-flight before
-    // any unmount/navigation happens. IndexedDB transactions, once begun,
-    // complete even if the page unmounts.
-    idbSaveItem(USER_FILES_IDB_KEY, nextFiles).catch((e) => {
-      logger.error('saveProject: IndexedDB write failed:', e)
-    })
+  /** Full project (media as blob: URLs), or null */
+  const loadProject = useCallback((id) => projectStore.loadProject(id), [])
 
-    setUserFiles(nextFiles)
-    return fileData
-  }, [userFiles, USER_FILES_IDB_KEY])
-
-  // Get project by ID
+  /** Summary of a project by id (sync; only non-deleted projects) */
   const getProject = useCallback((projectId) => {
-    return userFiles.find(f => f.id === projectId || f.id === parseInt(projectId))
+    if (projectId == null) return undefined
+    return userFiles.find((f) => String(f.id) === String(projectId))
   }, [userFiles])
 
-  const addUserFile = useCallback((file) => {
-    const now = new Date()
-    const newFile = {
-      ...file,
-      id: Date.now(),
-      created: now.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-      updatedAt: now.toISOString()
-    }
-    setUserFiles(prev => [newFile, ...prev])
-    return newFile
+  /** Most recent copy the user made of a store template */
+  const findTemplateCopy = useCallback((templateId) => {
+    if (!templateId) return null
+    return userFiles.find((f) => f.templateId && String(f.templateId) === String(templateId)) || null
+  }, [userFiles])
+
+  const duplicateProject = useCallback(async (id) => {
+    const summary = await projectStore.duplicateProject(ownerRef.current, id)
+    if (summary) { upsertSummary(summary); projectStore.notifyProjectsChanged({ id: summary.id }) }
+    return summary
+  }, [upsertSummary])
+
+  const deleteUserFile = useCallback(async (fileId) => {
+    const next = await projectStore.trashProject(fileId)
+    if (next) upsertSummary(next)
+    projectStore.notifyProjectsChanged({ id: fileId })
+  }, [upsertSummary])
+
+  const restoreUserFile = useCallback(async (fileId) => {
+    const next = await projectStore.restoreProject(fileId)
+    if (next) upsertSummary(next)
+    projectStore.notifyProjectsChanged({ id: fileId })
+  }, [upsertSummary])
+
+  const permanentlyDeleteFile = useCallback(async (fileId) => {
+    setProjectSummaries((prev) => prev.filter((m) => String(m.id) !== String(fileId)))
+    await projectStore.deleteProjectForever(fileId)
+    projectStore.notifyProjectsChanged({ id: fileId })
   }, [])
 
- const deleteUserFile = useCallback((fileId) => {
-    const file = userFiles.find(f => f.id === fileId)
-    if (file) {
-      const updatedFiles = userFiles.filter(f => f.id !== fileId)
-      setUserFiles(updatedFiles)
-      setTrashedItems(prev => [{ ...file, deletedAt: new Date() }, ...prev])
-      // Mirror the deletion to IndexedDB immediately so a post-delete refresh
-      // doesn't resurrect the file.
-      idbSaveItem(USER_FILES_IDB_KEY, updatedFiles).catch((e) => {
-        logger.error('deleteUserFile: IndexedDB write failed:', e)
-      })
-    }
-  }, [userFiles, USER_FILES_IDB_KEY])
-
-  const restoreUserFile = useCallback((fileId) => {
-    const file = trashedItems.find(f => f.id === fileId)
-    if (file) {
-      setTrashedItems(prev => prev.filter(f => f.id !== fileId))
-      const { deletedAt, ...restoredFile } = file
-      setUserFiles(prev => [restoredFile, ...prev])
-    }
-  }, [trashedItems])
-
-  const permanentlyDeleteFile = useCallback((fileId) => {
-    setTrashedItems(prev => prev.filter(f => f.id !== fileId))
-  }, [])
+  const addUserFile = saveProject
 
   // Membership API
   const buyMembership = useCallback(async (plan, successUrl = null, autopay = false, planId = null) => {
@@ -824,12 +733,18 @@ export const AppProvider = ({ children }) => {
     removeFavorite,
     isFavorite,
     // User Files/Projects
+    ownerKey,
     userFiles,
     isUserFilesLoaded,
     trashedItems,
     addUserFile,
     saveProject,
+    loadProject,
     getProject,
+    findTemplateCopy,
+    duplicateProject,
+    updateProjectSummary,
+    refreshUserFiles,
     deleteUserFile,
     restoreUserFile,
     permanentlyDeleteFile,

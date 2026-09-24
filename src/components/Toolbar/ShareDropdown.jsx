@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useEditor } from '../../context/EditorContext'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
-import { exportToPDF, exportToPPTX, exportToMP4Universal, detectVideoCapabilities } from '../../utils/exportUtils'
+import { exportToPDF, exportToPPTX } from '../../utils/exportUtils'
 import { isPremiumUser } from '../../utils/membership'
 import { userAPI } from '../../services/api'
 import { FRONTEND_CONFIG } from '../../config'
@@ -14,16 +14,9 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
   const { user, refreshUser } = useAuth()
   const toast = useToast()
   const [exporting, setExporting] = useState(null)
-  const [videoCapabilities, setVideoCapabilities] = useState(null)
   const dropdownRef = useRef(null)
 
   const isPremium = isPremiumUser(user)
-
-  // Detect video export capabilities on mount
-  useEffect(() => {
-    const capabilities = detectVideoCapabilities()
-    setVideoCapabilities(capabilities)
-  }, [])
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -35,26 +28,28 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [onClose])
 
-  // Strip base64 image data from frames before sharing — keeps URL small
+  // A share link carries the deck inside the URL, so pictures and media that
+  // only exist on this device (embedded data: images and the blob: URLs of
+  // the local media store) are left out — they would be huge, or simply not
+  // load on anyone else's device. Web images and built-in backgrounds stay.
+  const isLocalMedia = (v) => typeof v === 'string' && /^(data|blob):/i.test(v)
   const stripImagesFromFrames = (frames) => {
     if (!Array.isArray(frames)) return frames
     return frames.map(frame => ({
       ...frame,
+      ...(isLocalMedia(frame.backgroundImage) ? { backgroundImage: null } : {}),
+      ...(isLocalMedia(frame.background) ? { background: '' } : {}),
       elements: Array.isArray(frame.elements)
         ? frame.elements.map(el => {
-            if (el.src && typeof el.src === 'string' && el.src.startsWith('data:')) {
-              return { ...el, src: '' }
-            }
-            if (el.backgroundImage && typeof el.backgroundImage === 'string' && el.backgroundImage.startsWith('data:')) {
-              return { ...el, backgroundImage: '' }
-            }
-            return el
+            let next = el
+            const clear = (patch) => { next = { ...next, ...patch } }
+            if (isLocalMedia(el.src)) clear({ src: '' })
+            if (isLocalMedia(el.poster)) clear({ poster: '' })
+            if (isLocalMedia(el.backgroundImage)) clear({ backgroundImage: '' })
+            if (el.fill && typeof el.fill === 'object' && isLocalMedia(el.fill.src)) clear({ fill: 'transparent' })
+            return next
           })
         : frame.elements,
-      // Also strip slide-level background images
-      ...(frame.background && typeof frame.background === 'string' && frame.background.startsWith('data:')
-        ? { background: '' }
-        : {})
     }))
   }
 
@@ -138,6 +133,7 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
       const shareData = {
         ...data,
         frames: stripImagesFromFrames(data.frames),
+        ...(isLocalMedia(data.editorBackground) ? { editorBackground: null } : {}),
         sharedAt
       }
 
@@ -235,16 +231,12 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
         case 'pdf':
           success = await exportToPDF(frames, projectTitle, header, editorBackground)
           break
-        case 'pptx':
-          success = await exportToPPTX(frames, projectTitle, header, editorBackground)
+        case 'pptx': {
+          const result = await exportToPPTX(frames, projectTitle, header, editorBackground)
+          success = result.ok
+          result.warnings.forEach((w) => toast.info(w))
           break
-        case 'mp4':
-          success = await exportToMP4Universal(frames, projectTitle, {
-            scrollDirection: 'vertical',
-            slideDuration: 3000,
-            transitionDuration: 500
-          })
-          break
+        }
         default:
           throw new Error('Unknown format')
       }
@@ -353,8 +345,8 @@ const ShareDropdown = ({ onClose, onUpgrade, onExportVideo }) => {
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           <div className="flex-1 text-left">
-            <span>Video (.webm)</span>
-            <p className="text-xs text-gray-400">Animated video export</p>
+            <span>Video (.mp4)</span>
+            <p className="text-xs text-gray-400">Plays like the slideshow, with zooms</p>
           </div>
         </button>
       </div>
